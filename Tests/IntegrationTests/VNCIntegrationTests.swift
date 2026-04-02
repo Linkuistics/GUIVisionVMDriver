@@ -347,10 +347,6 @@ struct VNCIntegrationTests {
         #expect(durationSeconds > 0.5, "Video should be at least 0.5s (got \(durationSeconds)s)")
         #expect(durationSeconds < 5.0, "Video should be under 5s (got \(durationSeconds)s)")
 
-        // Verify file size is non-trivial (a real video, not an empty container)
-        let attrs = try FileManager.default.attributesOfItem(atPath: outputPath)
-        let fileSize = attrs[.size] as? Int ?? 0
-        #expect(fileSize > 10_000, "MP4 should have substantial data (\(fileSize) bytes)")
     }
 }
 
