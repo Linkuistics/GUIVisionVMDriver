@@ -1,2 +1,3 @@
-// TestSupport — shared test infrastructure for VM management.
-// Tasks 14-15 will populate this with VMManager and VMTestEnvironment.
+// TestSupport — shared test infrastructure for VM-backed integration tests.
+// VMManager: tart CLI wrapper
+// VMTestEnvironment: lazy VM lifecycle (create once, start/stop per suite)
