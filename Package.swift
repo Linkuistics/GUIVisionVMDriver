@@ -21,6 +21,9 @@ let package = Package(
             path: "Sources/GUIVisionVMDriver",
             linkerSettings: [
                 .linkedFramework("CoreGraphics"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo"),
             ]
         ),
         .executableTarget(
