@@ -6,7 +6,9 @@ A Swift library and CLI for interacting with machines via VNC and SSH. Designed 
 
 **VNC capture and input:**
 - Connect to any VNC server, capture screenshots (full or cropped), record video
+- Query display dimensions
 - Send keyboard events with platform-aware modifier mapping (Cmd/Alt/Ctrl work correctly on macOS, Windows, and Linux VMs)
+- Individual key-down/key-up and mouse-down/mouse-up for fine-grained control
 - Send mouse events: click, double-click, right-click, drag, scroll
 - Type text with automatic handling of uppercase and shifted symbols
 - Track cursor shape and position
@@ -23,18 +25,36 @@ A Swift library and CLI for interacting with machines via VNC and SSH. Designed 
 ## CLI
 
 ```bash
+# Display info
+guivision screen-size --vnc localhost:5901                              # prints "1920x1080"
+
 # Screenshot
 guivision screenshot --vnc localhost:5901 -o screen.png
 guivision screenshot --vnc localhost:5901 --region 0,0,800,600 -o cropped.png
 
-# Keyboard input
+# Keyboard — press and release
 guivision input key --vnc localhost:5901 return
 guivision input key --vnc localhost:5901 a --modifiers cmd
+guivision input key --vnc localhost:5901 z --modifiers cmd,shift
+
+# Keyboard — individual down/up
+guivision input key-down --vnc localhost:5901 shift
+guivision input key-up --vnc localhost:5901 shift
+
+# Text entry
 guivision input type --vnc localhost:5901 "Hello World!"
 
-# Mouse input
+# Mouse — click
 guivision input click --vnc localhost:5901 500 400
 guivision input click --vnc localhost:5901 500 400 --button right
+guivision input click --vnc localhost:5901 500 400 --count 2
+
+# Mouse — individual down/up
+guivision input mouse-down --vnc localhost:5901 100 200
+guivision input mouse-down --vnc localhost:5901 100 200 --button right
+guivision input mouse-up --vnc localhost:5901 100 200
+
+# Mouse — move, scroll, drag
 guivision input move --vnc localhost:5901 100 200
 guivision input scroll --vnc localhost:5901 500 400 --dy -3
 guivision input drag --vnc localhost:5901 100 100 400 400
@@ -50,6 +70,22 @@ guivision record --vnc localhost:5901 -o recording.mp4 --fps 30 --duration 10
 
 All commands accept `--connect spec.json` for connection details from a JSON file, or individual `--vnc`, `--ssh`, and `--platform` flags.
 
+### Key names
+
+Letters: `a`-`z` | Digits: `0`-`9` | Special: `return` `enter` `tab` `escape` `esc` `space` `delete` `backspace` `forwarddelete` | Arrows: `up` `down` `left` `right` | Navigation: `home` `end` `pageup` `pagedown` | Function: `f1`-`f12`
+
+### Modifier names
+
+`cmd` `command` `alt` `option` `shift` `ctrl` `control` (mapped correctly per `--platform`)
+
+### Mouse buttons
+
+`left` `right` `middle` `center`
+
+### Display resolution
+
+VNC cannot change the display resolution. For tart VMs, use `tart set <vm> --display <width>x<height>` before or while the VM is running.
+
 ## Library
 
 ```swift
@@ -58,6 +94,9 @@ import GUIVisionVMDriver
 // Connect
 let capture = VNCCapture(host: "localhost", port: 5901, password: "secret")
 try await capture.connect()
+
+// Screen size
+let size = await capture.screenSize() // CGSize?
 
 // Screenshot
 let image = try await capture.captureImage()
@@ -68,6 +107,12 @@ try await capture.withConnection { conn in
     VNCInput.typeText("Hello", connection: conn)
     try VNCInput.pressKey("return", platform: .macos, connection: conn)
     try VNCInput.click(x: 500, y: 400, connection: conn)
+
+    // Fine-grained control
+    try VNCInput.keyDown("shift", platform: .macos, connection: conn)
+    try VNCInput.keyUp("shift", platform: .macos, connection: conn)
+    try VNCInput.mouseDown(x: 100, y: 200, button: "left", connection: conn)
+    try VNCInput.mouseUp(x: 300, y: 400, button: "left", connection: conn)
 }
 
 // SSH
@@ -94,8 +139,6 @@ Create the golden image (one-time, ~10 minutes):
 scripts/vm-create-golden.sh
 ```
 
-This clones a vanilla macOS image, configures SSH key auth, installs Xcode CLI tools and Homebrew, sets a solid gray wallpaper, hides desktop widgets, and snapshots the result.
-
 ### Running tests
 
 ```bash
@@ -111,8 +154,6 @@ scripts/test-integration.sh --keep
 
 ### Interactive use
 
-For iterating on tests without restarting the VM each time:
-
 ```bash
 source scripts/vm-start.sh --viewer
 swift test --filter IntegrationTests
@@ -126,8 +167,6 @@ source scripts/vm-stop.sh
 swift test
 ```
 
-Unit tests run without any VM or environment variables. Integration tests are automatically skipped when `GUIVISION_TEST_VNC` is not set.
-
 ## Scripts
 
 | Script | How to run | What it does |
@@ -137,11 +176,9 @@ Unit tests run without any VM or environment variables. Integration tests are au
 | `scripts/vm-start.sh` | `source scripts/vm-start.sh` | Start VM, set env vars in current shell |
 | `scripts/vm-stop.sh` | `source scripts/vm-stop.sh` | Stop VM, clean env vars |
 
-See [scripts/README.md](scripts/README.md) for full options, environment variables, and LLM usage patterns.
-
 ## Golden Image Contents
 
-The golden image (`guivision-golden-tahoe`) created by `vm-create-golden.sh` includes:
+The golden image (`guivision-golden-tahoe`) includes:
 
 - **macOS Tahoe** (Apple Silicon, via Cirrus Labs vanilla image)
 - **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin`
@@ -149,7 +186,7 @@ The golden image (`guivision-golden-tahoe`) created by `vm-create-golden.sh` inc
 - **Homebrew** — `/opt/homebrew/bin/brew`
 - **Solid gray wallpaper** — clean background for screenshot analysis
 - **No desktop widgets** — no visual clutter
-- **Session restore disabled** — Terminal and other apps don't reopen old windows
+- **Session restore disabled** — apps don't reopen old windows
 
 ## Requirements
 
@@ -157,3 +194,7 @@ The golden image (`guivision-golden-tahoe`) created by `vm-create-golden.sh` inc
 - Swift 6.0
 - [tart](https://tart.run) (for integration tests only)
 - SSH public key at `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` (for golden image creation)
+
+## LLM Integration
+
+See [LLM_INSTRUCTIONS.md](LLM_INSTRUCTIONS.md) for complete instructions on using this project as a tool for LLM-driven automation.
