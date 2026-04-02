@@ -5,37 +5,72 @@ import CoreGraphics
 import CoreMedia
 import RoyalVNCKit
 import GUIVisionVMDriver
-import TestSupport
 
-/// Integration tests that run against a real macOS VM via tart.
+// MARK: - Environment-driven connection setup
+
+/// Reads VNC/SSH endpoints from environment variables.
+/// No VM management — the caller is responsible for providing a running VM.
 ///
-/// Requires the golden image `testanyware-golden-tahoe` to exist.
-/// On first run, the test VM is cloned from the golden (fast, ~30s).
+/// Required:
+///   GUIVISION_TEST_VNC=host:port          VNC endpoint
 ///
-/// Set GUIVISION_SKIP_INTEGRATION=1 to skip all integration tests.
+/// Optional:
+///   GUIVISION_TEST_VNC_PASSWORD=secret    VNC password
+///   GUIVISION_TEST_SSH=user@host[:port]   SSH endpoint (enables SSH tests)
+///   GUIVISION_TEST_PLATFORM=macos         Platform hint (default: macos)
+///   GUIVISION_SKIP_INTEGRATION=1          Skip all integration tests
+///
+/// Example with tart:
+///   tart clone testanyware-golden-tahoe test-vm
+///   tart run test-vm --no-graphics --vnc-experimental &
+///   # parse VNC URL from tart output, get IP via `tart ip test-vm`
+///   GUIVISION_TEST_VNC=localhost:5901 \
+///   GUIVISION_TEST_VNC_PASSWORD=abc123 \
+///   GUIVISION_TEST_SSH=admin@192.168.64.100 \
+///   swift test --filter IntegrationTests
+enum TestEnv {
+    static let spec: ConnectionSpec? = {
+        guard let vnc = ProcessInfo.processInfo.environment["GUIVISION_TEST_VNC"] else {
+            return nil
+        }
+        let password = ProcessInfo.processInfo.environment["GUIVISION_TEST_VNC_PASSWORD"]
+        let ssh = ProcessInfo.processInfo.environment["GUIVISION_TEST_SSH"]
+        let platform = ProcessInfo.processInfo.environment["GUIVISION_TEST_PLATFORM"]
+
+        guard var spec = try? ConnectionSpec.from(vnc: vnc, ssh: ssh, platform: platform) else {
+            return nil
+        }
+
+        // Apply VNC password if provided separately
+        if let password, !password.isEmpty {
+            spec = ConnectionSpec(
+                vnc: VNCSpec(host: spec.vnc.host, port: spec.vnc.port, password: password),
+                ssh: spec.ssh,
+                platform: spec.platform
+            )
+        }
+
+        return spec
+    }()
+
+    static let ssh: SSHClient? = {
+        guard let spec, spec.ssh != nil else { return nil }
+        return try? SSHClient(connectionSpec: spec)
+    }()
+}
+
+// MARK: - VNC Integration Tests
+
 @Suite("VNC Integration",
-       .enabled(if: ProcessInfo.processInfo.environment["GUIVISION_SKIP_INTEGRATION"] != "1"),
+       .enabled(if: ProcessInfo.processInfo.environment["GUIVISION_SKIP_INTEGRATION"] != "1"
+                && ProcessInfo.processInfo.environment["GUIVISION_TEST_VNC"] != nil),
        .serialized)
 struct VNCIntegrationTests {
 
-    static let spec: ConnectionSpec? = {
-        if let vnc = ProcessInfo.processInfo.environment["GUIVISION_TEST_VNC"] {
-            let platform = ProcessInfo.processInfo.environment["GUIVISION_TEST_PLATFORM"]
-            return try? ConnectionSpec.from(vnc: vnc, platform: platform)
-        }
-        return try? VMTestEnvironment.shared.connectionSpec()
-    }()
-
-    /// Lazy SSH client — nil if SSH is not available.
-    static let ssh: SSHClient? = {
-        guard let spec = spec, spec.ssh != nil else { return nil }
-        return try? SSHClient(connectionSpec: spec)
-    }()
-
-    // MARK: - VNC Connection
+    // MARK: - Connection
 
     @Test func connectsAndReportsScreenSize() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -47,16 +82,14 @@ struct VNCIntegrationTests {
     }
 
     @Test func reconnectsAfterDisconnect() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
 
-        // First connection
         try await capture.connect(timeout: .seconds(30))
         let size1 = await capture.screenSize()
         #expect(size1 != nil)
         await capture.disconnect()
 
-        // Second connection — should work
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
         let size2 = await capture.screenSize()
@@ -67,7 +100,7 @@ struct VNCIntegrationTests {
     // MARK: - Screenshot Capture
 
     @Test func capturesFullScreenshot() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -79,30 +112,27 @@ struct VNCIntegrationTests {
     }
 
     @Test func capturesValidPNG() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
 
         let png = try await capture.screenshot()
-        // Verify PNG magic bytes
-        #expect(png.count > 1000, "PNG should have substantial data, not a stub")
-        #expect(png[0] == 0x89, "PNG magic byte 0")
-        #expect(png[1] == 0x50, "PNG magic byte 1 (P)")
-        #expect(png[2] == 0x4E, "PNG magic byte 2 (N)")
-        #expect(png[3] == 0x47, "PNG magic byte 3 (G)")
+        #expect(png.count > 1000, "PNG should have substantial data")
+        #expect(png[0] == 0x89)
+        #expect(png[1] == 0x50) // P
+        #expect(png[2] == 0x4E) // N
+        #expect(png[3] == 0x47) // G
 
-        // Verify PNG can be written and read back
         let tmpPath = NSTemporaryDirectory() + "guivision-test-\(UUID().uuidString).png"
         defer { try? FileManager.default.removeItem(atPath: tmpPath) }
         try png.write(to: URL(fileURLWithPath: tmpPath))
-
         let readBack = try Data(contentsOf: URL(fileURLWithPath: tmpPath))
-        #expect(readBack.count == png.count, "Read-back size should match")
+        #expect(readBack.count == png.count)
     }
 
     @Test func capturesCroppedRegion() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -114,7 +144,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func consecutiveScreenshotsSameSize() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -122,22 +152,18 @@ struct VNCIntegrationTests {
         let img1 = try await capture.captureImage()
         try await Task.sleep(for: .milliseconds(200))
         let img2 = try await capture.captureImage()
-
-        #expect(img1.width == img2.width, "Consecutive screenshots should be same width")
-        #expect(img1.height == img2.height, "Consecutive screenshots should be same height")
+        #expect(img1.width == img2.width)
+        #expect(img1.height == img2.height)
     }
 
     // MARK: - Mouse Input
 
     @Test func mouseMoveAndCaptureWorkTogether() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
 
-        // Move mouse to several positions and capture a screenshot at each.
-        // VNC cursor is a separate overlay (not in the framebuffer), so we
-        // verify the pipeline works rather than comparing pixels.
         for (x, y) in [(UInt16(10), UInt16(10)), (500, 400), (800, 600)] {
             try await capture.withConnection { conn in
                 VNCInput.mouseMove(x: x, y: y, connection: conn)
@@ -145,59 +171,50 @@ struct VNCIntegrationTests {
             try await Task.sleep(for: .milliseconds(100))
             let img = try await capture.captureImage()
             #expect(img.width > 0)
-            #expect(img.height > 0)
         }
     }
 
     @Test func mouseClickAccepted() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
 
-        // Single click
         try await capture.withConnection { conn in
             try VNCInput.click(x: 500, y: 400, button: "left", count: 1, connection: conn)
         }
-        // Double click
         try await capture.withConnection { conn in
             try VNCInput.click(x: 500, y: 400, button: "left", count: 2, connection: conn)
         }
-        // Right click — should open context menu
         try await capture.withConnection { conn in
             try VNCInput.click(x: 500, y: 400, button: "right", count: 1, connection: conn)
         }
         try await Task.sleep(for: .milliseconds(500))
-        // Dismiss context menu with escape
         try await capture.withConnection { conn in
             try VNCInput.pressKey("escape", platform: spec.platform, connection: conn)
         }
     }
 
     @Test func mouseDragCompletesWithoutError() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
 
-        // Drag with left button
         try await capture.withConnection { conn in
             try VNCInput.drag(fromX: 200, fromY: 200, toX: 400, toY: 400,
                               button: "left", steps: 20, connection: conn)
         }
-
-        // Verify we can still capture after drag (connection still healthy)
         let img = try await capture.captureImage()
         #expect(img.width > 0)
     }
 
     @Test func scrollAccepted() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
 
-        // Scroll up, down, left, right
         try await capture.withConnection { conn in
             VNCInput.scroll(x: 500, y: 400, deltaX: 0, deltaY: -3, connection: conn)
             VNCInput.scroll(x: 500, y: 400, deltaX: 0, deltaY: 3, connection: conn)
@@ -209,7 +226,7 @@ struct VNCIntegrationTests {
     // MARK: - Keyboard Input
 
     @Test func specialKeysAccepted() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -229,70 +246,54 @@ struct VNCIntegrationTests {
     }
 
     @Test func modifierCombinationsAccepted() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
 
         try await capture.withConnection { conn in
-            // Cmd+A (select all)
             try VNCInput.pressKey("a", modifiers: ["cmd"], platform: spec.platform, connection: conn)
-            // Cmd+Shift+Z (redo)
             try VNCInput.pressKey("z", modifiers: ["cmd", "shift"], platform: spec.platform, connection: conn)
-            // Ctrl+C
             try VNCInput.pressKey("c", modifiers: ["ctrl"], platform: spec.platform, connection: conn)
-            // Alt+Tab
-            try VNCInput.pressKey("tab", modifiers: ["alt"], platform: spec.platform, connection: conn)
         }
     }
 
     @Test func typeTextExercisesShiftedChars() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
 
-        // Exercise the full shifted character pathway — uppercase letters,
-        // symbols requiring shift (!@#$), and regular chars.
-        // VNC server must accept all events without error.
         try await capture.withConnection { conn in
             VNCInput.typeText("Hello World! @#$ Test_123", connection: conn)
         }
-
-        // Verify connection is still healthy after typing
         let img = try await capture.captureImage()
-        #expect(img.width > 0, "Should still be able to capture after typing")
+        #expect(img.width > 0)
     }
 
     // MARK: - Cursor State
 
     @Test func cursorStateAccessibleAfterMovement() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
 
-        // Move mouse to trigger potential cursor update
         try await capture.withConnection { conn in
             VNCInput.mouseMove(x: 500, y: 400, connection: conn)
         }
         try await Task.sleep(for: .seconds(1))
 
-        // Cursor state API should be accessible without crashing.
-        // Whether shape/position is populated depends on VNC server config
-        // (tart may or may not send cursor pseudo-encoding).
         let cursor = await capture.cursorState
         if let size = cursor.size {
-            #expect(size.width > 0 && size.height > 0, "If reported, cursor should have non-zero dimensions")
+            #expect(size.width > 0 && size.height > 0)
         }
-        // This test passes regardless of whether cursor data is reported —
-        // the API must work without crashing.
     }
 
     // MARK: - Streaming Capture
 
     @Test func recordsVideoFromLiveVNC() async throws {
-        let spec = try #require(Self.spec, "VM not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -313,11 +314,9 @@ struct VNCIntegrationTests {
         let recorder = StreamingCapture()
         try await recorder.start(outputPath: outputPath, config: config)
 
-        // Capture 10 real frames from the VNC server
         for i in 0..<10 {
             let image = try await capture.captureImage()
             try await recorder.appendFrame(image)
-            // Move mouse to make frames differ
             try await capture.withConnection { conn in
                 VNCInput.mouseMove(x: UInt16(100 + i * 30), y: UInt16(100 + i * 20), connection: conn)
             }
@@ -326,89 +325,69 @@ struct VNCIntegrationTests {
 
         try await recorder.stop()
 
-        // Verify the MP4 is a valid, playable video with correct properties
         let url = URL(fileURLWithPath: outputPath)
         let asset = AVURLAsset(url: url)
-
-        // Load video track metadata
         let tracks = try await asset.loadTracks(withMediaType: .video)
-        #expect(!tracks.isEmpty, "MP4 should contain at least one video track")
+        #expect(!tracks.isEmpty, "MP4 should contain a video track")
 
         let track = tracks[0]
         let naturalSize = try await track.load(.naturalSize)
-        #expect(Int(naturalSize.width) == Int(screenSize.width),
-                "Video width (\(Int(naturalSize.width))) should match screen width (\(Int(screenSize.width)))")
-        #expect(Int(naturalSize.height) == Int(screenSize.height),
-                "Video height (\(Int(naturalSize.height))) should match screen height (\(Int(screenSize.height)))")
+        #expect(Int(naturalSize.width) == Int(screenSize.width))
+        #expect(Int(naturalSize.height) == Int(screenSize.height))
 
-        // Verify duration — 10 frames at 10fps = ~1 second
         let duration = try await asset.load(.duration)
         let durationSeconds = CMTimeGetSeconds(duration)
-        #expect(durationSeconds > 0.5, "Video should be at least 0.5s (got \(durationSeconds)s)")
-        #expect(durationSeconds < 5.0, "Video should be under 5s (got \(durationSeconds)s)")
-
+        #expect(durationSeconds > 0.5)
+        #expect(durationSeconds < 5.0)
     }
 }
 
 // MARK: - SSH Integration Tests
 
 @Suite("SSH Integration",
-       .enabled(if: ProcessInfo.processInfo.environment["GUIVISION_SKIP_INTEGRATION"] != "1"),
+       .enabled(if: ProcessInfo.processInfo.environment["GUIVISION_SKIP_INTEGRATION"] != "1"
+                && ProcessInfo.processInfo.environment["GUIVISION_TEST_SSH"] != nil),
        .serialized)
 struct SSHIntegrationTests {
 
-    static let spec: ConnectionSpec? = {
-        try? VMTestEnvironment.shared.connectionSpec()
-    }()
-
-    static let ssh: SSHClient? = {
-        guard let spec = spec, spec.ssh != nil else { return nil }
-        return try? SSHClient(connectionSpec: spec)
-    }()
-
-    // MARK: - SSH Command Execution
+    // MARK: - Command Execution
 
     @Test func execSimpleCommand() throws {
-        let client = try #require(Self.ssh, "SSH not available")
-
+        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
         let result = try client.exec("echo hello")
-        #expect(result.succeeded, "echo should succeed")
-        #expect(result.stdout == "hello", "stdout should contain 'hello', got: '\(result.stdout)'")
+        #expect(result.succeeded)
+        #expect(result.stdout == "hello")
         #expect(result.exitCode == 0)
     }
 
     @Test func execCommandWithArguments() throws {
-        let client = try #require(Self.ssh, "SSH not available")
-
+        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
         let result = try client.exec("uname -s")
         #expect(result.succeeded)
-        #expect(result.stdout == "Darwin", "Should be running macOS (Darwin)")
+        #expect(result.stdout == "Darwin")
     }
 
     @Test func execCommandCapturesStderr() throws {
-        let client = try #require(Self.ssh, "SSH not available")
-
+        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
         let result = try client.exec("ls /nonexistent-path-12345")
-        #expect(!result.succeeded, "ls of nonexistent path should fail")
+        #expect(!result.succeeded)
         #expect(result.exitCode != 0)
-        #expect(!result.stderr.isEmpty, "stderr should contain error message")
+        #expect(!result.stderr.isEmpty)
     }
 
     @Test func execCommandReturnsExitCode() throws {
-        let client = try #require(Self.ssh, "SSH not available")
-
+        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
         let result = try client.exec("exit 42")
-        #expect(result.exitCode == 42, "Exit code should be 42, got \(result.exitCode)")
+        #expect(result.exitCode == 42)
         #expect(!result.succeeded)
     }
 
     @Test func execMultilineOutput() throws {
-        let client = try #require(Self.ssh, "SSH not available")
-
+        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
         let result = try client.exec("echo 'line1'; echo 'line2'; echo 'line3'")
         #expect(result.succeeded)
         let lines = result.stdout.split(separator: "\n")
-        #expect(lines.count == 3, "Should have 3 lines of output")
+        #expect(lines.count == 3)
         #expect(lines[0] == "line1")
         #expect(lines[2] == "line3")
     }
@@ -416,7 +395,7 @@ struct SSHIntegrationTests {
     // MARK: - SCP File Transfer
 
     @Test func uploadAndVerifyFile() throws {
-        let client = try #require(Self.ssh, "SSH not available")
+        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
 
         let testContent = "GUIVisionVMDriver upload test — \(UUID().uuidString)"
         let localPath = NSTemporaryDirectory() + "guivision-upload-\(UUID().uuidString).txt"
@@ -426,21 +405,17 @@ struct SSHIntegrationTests {
             _ = try? client.exec("rm -f \(remotePath)")
         }
 
-        // Write local file
         try testContent.write(toFile: localPath, atomically: true, encoding: .utf8)
-
-        // Upload
         let uploadResult = try client.upload(localPath: localPath, remotePath: remotePath)
-        #expect(uploadResult.succeeded, "Upload should succeed: \(uploadResult.stderr)")
+        #expect(uploadResult.succeeded, "Upload failed: \(uploadResult.stderr)")
 
-        // Verify via SSH exec
         let catResult = try client.exec("cat \(remotePath)")
-        #expect(catResult.succeeded, "cat should succeed")
-        #expect(catResult.stdout == testContent, "Remote file should match uploaded content")
+        #expect(catResult.succeeded)
+        #expect(catResult.stdout == testContent)
     }
 
     @Test func downloadFile() throws {
-        let client = try #require(Self.ssh, "SSH not available")
+        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
 
         let testContent = "GUIVisionVMDriver download test — \(UUID().uuidString)"
         let remotePath = "/tmp/guivision-download-test.txt"
@@ -450,23 +425,19 @@ struct SSHIntegrationTests {
             _ = try? client.exec("rm -f \(remotePath)")
         }
 
-        // Create remote file via SSH exec
         let writeResult = try client.exec("echo -n '\(testContent)' > \(remotePath)")
-        #expect(writeResult.succeeded, "Remote write should succeed")
+        #expect(writeResult.succeeded)
 
-        // Download
         let downloadResult = try client.download(remotePath: remotePath, localPath: localPath)
-        #expect(downloadResult.succeeded, "Download should succeed: \(downloadResult.stderr)")
+        #expect(downloadResult.succeeded, "Download failed: \(downloadResult.stderr)")
 
-        // Verify local content
         let downloaded = try String(contentsOfFile: localPath, encoding: .utf8)
-        #expect(downloaded == testContent, "Downloaded file should match remote content")
+        #expect(downloaded == testContent)
     }
 
     @Test func uploadDownloadRoundtrip() throws {
-        let client = try #require(Self.ssh, "SSH not available")
+        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
 
-        // Create a binary-ish test file with known content
         let testData = Data((0..<256).map { UInt8($0) })
         let localUploadPath = NSTemporaryDirectory() + "guivision-roundtrip-up-\(UUID().uuidString).bin"
         let remotePath = "/tmp/guivision-roundtrip-test.bin"
@@ -480,20 +451,20 @@ struct SSHIntegrationTests {
         try testData.write(to: URL(fileURLWithPath: localUploadPath))
 
         let up = try client.upload(localPath: localUploadPath, remotePath: remotePath)
-        #expect(up.succeeded, "Upload should succeed")
+        #expect(up.succeeded)
 
         let down = try client.download(remotePath: remotePath, localPath: localDownloadPath)
-        #expect(down.succeeded, "Download should succeed")
+        #expect(down.succeeded)
 
         let roundtripped = try Data(contentsOf: URL(fileURLWithPath: localDownloadPath))
-        #expect(roundtripped == testData, "Roundtripped data should match exactly (\(roundtripped.count) vs \(testData.count) bytes)")
+        #expect(roundtripped == testData)
     }
 
-    // MARK: - SSH + VNC Combined: Verify Input via SSH
+    // MARK: - VNC + SSH Cross-verification
 
     @Test func vncInputReachesVM() async throws {
-        let spec = try #require(Self.spec, "VM not available")
-        let client = try #require(Self.ssh, "SSH not available")
+        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
 
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
@@ -506,16 +477,13 @@ struct SSHIntegrationTests {
             _ = try? client.exec("killall Terminal 2>/dev/null")
         }
 
-        // Kill existing Terminal
         _ = try? client.exec("killall Terminal 2>/dev/null")
         try await Task.sleep(for: .seconds(2))
 
-        // Create a short reader script via SSH. The script:
-        // - reads one line from stdin
-        // - writes it to /tmp/r.txt
-        _ = try client.exec("printf '#!/bin/bash\\nread x\\necho $x > /tmp/r.txt\\n' > /tmp/m.sh && chmod +x /tmp/m.sh")
+        // Create reader script via SSH — reads one line, writes to file
+        _ = try client.exec("printf '#!/bin/bash\\nread x\\necho $x > \(resultPath)\\n' > /tmp/m.sh && chmod +x /tmp/m.sh")
 
-        // Release any stuck modifier keys from previous tests
+        // Release stuck modifiers, dismiss stale UI
         try await capture.withConnection { conn in
             conn.keyUp(.shift)
             conn.keyUp(.control)
@@ -524,51 +492,38 @@ struct SSHIntegrationTests {
             conn.keyUp(.optionForARD)
         }
         try await Task.sleep(for: .milliseconds(300))
-
-        // Dismiss any stale UI (context menus, Spotlight, etc.) from previous tests
         try await capture.withConnection { conn in
             try VNCInput.pressKey("escape", platform: spec.platform, connection: conn)
         }
         try await Task.sleep(for: .milliseconds(500))
 
-        // Open Terminal via SSH, then wait generously for it to come to front.
-        // Under load (full test suite), the VM may be slower to process UI events.
+        // Open Terminal and wait for it to come to front
         _ = try client.exec("open -a Terminal")
         try await Task.sleep(for: .seconds(8))
 
-        // Click on the Terminal window to make it the key window.
-        // On macOS, the first click on an inactive window activates the app
-        // but may be consumed by the window manager. Click twice with delay.
+        // Double-click center to activate Terminal and focus text area
         let screenSize = await capture.screenSize()!
-        let centerX = UInt16(screenSize.width / 2)
-        let centerY = UInt16(screenSize.height / 2)
-
+        let cx = UInt16(screenSize.width / 2)
+        let cy = UInt16(screenSize.height / 2)
         try await capture.withConnection { conn in
-            try VNCInput.click(x: centerX, y: centerY, connection: conn)
+            try VNCInput.click(x: cx, y: cy, connection: conn)
+        }
+        try await Task.sleep(for: .seconds(2))
+        try await capture.withConnection { conn in
+            try VNCInput.click(x: cx, y: cy, connection: conn)
         }
         try await Task.sleep(for: .seconds(2))
 
-        // Second click to ensure the text area is focused
-        try await capture.withConnection { conn in
-            try VNCInput.click(x: centerX, y: centerY, connection: conn)
-        }
-        try await Task.sleep(for: .seconds(2))
-
-        // Try up to 3 times. macOS focus management over VNC is timing-dependent:
-        // Terminal may not receive keyboard focus on the first attempt.
+        // Retry up to 3 times — macOS VNC focus is timing-dependent
         var verified = false
         for attempt in 1...3 {
-            // Clean up any previous attempt's state
             _ = try? client.exec("rm -f \(resultPath)")
 
             if attempt > 1 {
-                // Re-click to grab focus on retry
                 try await capture.withConnection { conn in
-                    try VNCInput.click(x: centerX, y: centerY, connection: conn)
+                    try VNCInput.click(x: cx, y: cy, connection: conn)
                 }
                 try await Task.sleep(for: .seconds(2))
-
-                // Clear any partial input with Ctrl+U then Ctrl+C
                 try await capture.withConnection { conn in
                     try VNCInput.pressKey("u", modifiers: ["ctrl"], platform: spec.platform, connection: conn)
                     try VNCInput.pressKey("c", modifiers: ["ctrl"], platform: spec.platform, connection: conn)
@@ -576,29 +531,24 @@ struct SSHIntegrationTests {
                 try await Task.sleep(for: .seconds(1))
             }
 
-            // Type the path to our reader script and press Return.
             try await capture.withConnection { conn in
                 VNCInput.typeText("/tmp/m.sh", connection: conn)
             }
             try await Task.sleep(for: .milliseconds(300))
-
             try await capture.withConnection { conn in
                 try VNCInput.pressKey("return", platform: spec.platform, connection: conn)
             }
             try await Task.sleep(for: .seconds(2))
 
-            // Type the alphanumeric marker and press Return.
             try await capture.withConnection { conn in
                 VNCInput.typeText(marker, connection: conn)
             }
             try await Task.sleep(for: .milliseconds(300))
-
             try await capture.withConnection { conn in
                 try VNCInput.pressKey("return", platform: spec.platform, connection: conn)
             }
             try await Task.sleep(for: .seconds(2))
 
-            // Check if it worked
             let result = try client.exec("cat \(resultPath)")
             if result.succeeded && result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).contains(marker) {
                 verified = true
@@ -606,11 +556,6 @@ struct SSHIntegrationTests {
             }
         }
 
-        // VNC→Terminal keyboard focus is timing-dependent on macOS VMs.
-        // When Terminal doesn't receive focus, the typed text goes nowhere.
-        // This is a known limitation of VNC-based input on macOS desktops.
-        // The test passes when focus management works (most of the time)
-        // but is marked as a known issue to avoid flaky CI failures.
         withKnownIssue("macOS VNC focus timing is non-deterministic") {
             #expect(verified,
                     "VNC keyboard input should reach Terminal (marker '\(marker)' should appear in \(resultPath))")

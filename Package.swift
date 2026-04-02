@@ -34,33 +34,21 @@ let package = Package(
             ],
             path: "Sources/guivision"
         ),
-        // MARK: - Test support library
-        .target(
-            name: "TestSupport",
-            dependencies: [
-                "GUIVisionVMDriver",
-                .product(name: "RoyalVNCKit", package: "royalvnc"),
-            ],
-            path: "Tests/TestSupport"
-        ),
-
         // MARK: - Unit tests
         .testTarget(
             name: "GUIVisionVMDriverTests",
             dependencies: [
                 "GUIVisionVMDriver",
-                "TestSupport",
                 .product(name: "RoyalVNCKit", package: "royalvnc"),
             ],
             path: "Tests/GUIVisionVMDriverTests"
         ),
 
-        // MARK: - Integration tests (require tart VM)
+        // MARK: - Integration tests (require a VNC endpoint)
         .testTarget(
             name: "IntegrationTests",
             dependencies: [
                 "GUIVisionVMDriver",
-                "TestSupport",
                 .product(name: "RoyalVNCKit", package: "royalvnc"),
             ],
             path: "Tests/IntegrationTests"
