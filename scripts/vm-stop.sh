@@ -7,16 +7,11 @@
 _NAME="${GUIVISION_VM_NAME:-guivision-inttest}"
 _PID="${GUIVISION_VM_PID:-}"
 
-# Close VNC viewer (Screen Sharing.app) if connected to this VM
-if [[ -n "${GUIVISION_TEST_VNC:-}" ]]; then
-    _PORT=$(echo "$GUIVISION_TEST_VNC" | cut -d: -f2)
-    # Screen Sharing uses the VNC URL as window title
-    osascript -e "
-        tell application \"Screen Sharing\"
-            if it is running then quit
-        end tell
-    " 2>/dev/null || true
-fi
+# Close VNC viewer (Screen Sharing.app)
+osascript -e 'tell application "Screen Sharing" to quit' 2>/dev/null || true
+# If osascript fails (e.g. app is hung on a dead connection), force kill
+sleep 0.5
+killall "Screen Sharing" 2>/dev/null || true
 
 if [[ -n "$_PID" ]] && kill -0 "$_PID" 2>/dev/null; then
     echo "Stopping tart (PID $_PID)..."
