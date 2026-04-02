@@ -181,6 +181,31 @@ vm_ssh "defaults write com.apple.loginwindow TALLogoutSavesState -bool false"
 vm_ssh "defaults write com.apple.loginwindow LoginwindowLaunchesRelaunchApps -bool false"
 vm_ssh "defaults write com.apple.Terminal NSQuitAlwaysKeepsWindows -bool false"
 
+# --- Set solid wallpaper ---
+# A solid background makes visual processing of screenshots more reliable.
+# We compile a tiny helper on the host (needs AppKit/NSWorkspace) and SCP
+# it to the VM since the vanilla image has no dev tools.
+
+echo "Setting wallpaper to solid gray..."
+_HELPER_SRC="$(cd "$(dirname "$0")" && pwd)/helpers/set-wallpaper.swift"
+_HELPER_BIN=$(mktemp)
+if [[ -f "$_HELPER_SRC" ]] && swiftc -o "$_HELPER_BIN" "$_HELPER_SRC" 2>/dev/null; then
+    # Create a 1x1 gray PNG and scale it up with sips (built-in, no Xcode needed)
+    vm_ssh 'echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADklEQVQI12NgYPj/HwADBwIAMCbHYQAAAABJRU5ErkJggg==" | base64 -d > /tmp/solid.png && sips -z 1080 1920 /tmp/solid.png >/dev/null 2>&1 && mkdir -p ~/Pictures && mv /tmp/solid.png ~/Pictures/solid_gray.png'
+    vm_scp "$_HELPER_BIN" "/tmp/set-wallpaper"
+    vm_ssh "chmod +x /tmp/set-wallpaper && /tmp/set-wallpaper /Users/$_VANILLA_USER/Pictures/solid_gray.png && rm /tmp/set-wallpaper"
+else
+    echo "WARNING: Could not compile set-wallpaper helper — skipping wallpaper"
+fi
+rm -f "$_HELPER_BIN"
+
+# --- Remove desktop widgets ---
+
+echo "Removing desktop widgets..."
+vm_ssh "defaults write com.apple.notificationcenterui widgets -dict vers -int 1"
+vm_ssh "killall NotificationCenter 2>/dev/null || true"
+sleep 1
+
 # --- Close Terminal and clean desktop state ---
 # The vanilla image boots with Terminal open from the previous session.
 # We need to quit it cleanly so it doesn't reopen on next boot.
