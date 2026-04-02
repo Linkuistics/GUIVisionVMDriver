@@ -128,6 +128,50 @@ public final class VMManager: Sendable {
         throw VMManagerError.timeout("VM '\(vm)' did not produce a VNC URL within \(Int(timeout))s")
     }
 
+    /// Get the IP address of a running VM via `tart ip`.
+    /// Polls until the IP is available or timeout is reached.
+    public func vmIP(_ name: String, timeout: TimeInterval = 60) throws -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let ip = try? runTart(["ip", name]).trimmingCharacters(in: .whitespacesAndNewlines),
+               !ip.isEmpty {
+                return ip
+            }
+            Thread.sleep(forTimeInterval: 2)
+        }
+        throw VMManagerError.timeout("Could not get IP for VM '\(name)' within \(Int(timeout))s")
+    }
+
+    /// Wait for SSH to become reachable on the given host.
+    public func waitForSSH(host: String, port: Int = 22, user: String = "admin", timeout: TimeInterval = 120) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = [
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "LogLevel=ERROR",
+                "-o", "ConnectTimeout=5",
+                "-p", "\(port)",
+                "\(user)@\(host)",
+                "echo ok",
+            ]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus == 0 {
+                    return true
+                }
+            } catch {}
+            Thread.sleep(forTimeInterval: 3)
+        }
+        return false
+    }
+
     public func stop(vm: String) throws {
         try runTart(Self.tartArguments(for: .stop, vm: vm))
     }
