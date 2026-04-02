@@ -1,6 +1,8 @@
 import Testing
 import Foundation
+import AVFoundation
 import CoreGraphics
+import CoreMedia
 import RoyalVNCKit
 import GUIVisionVMDriver
 import TestSupport
@@ -324,12 +326,31 @@ struct VNCIntegrationTests {
 
         try await recorder.stop()
 
-        // Verify MP4 file
-        let fileExists = FileManager.default.fileExists(atPath: outputPath)
-        #expect(fileExists, "MP4 file should exist")
+        // Verify the MP4 is a valid, playable video with correct properties
+        let url = URL(fileURLWithPath: outputPath)
+        let asset = AVURLAsset(url: url)
+
+        // Load video track metadata
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        #expect(!tracks.isEmpty, "MP4 should contain at least one video track")
+
+        let track = tracks[0]
+        let naturalSize = try await track.load(.naturalSize)
+        #expect(Int(naturalSize.width) == Int(screenSize.width),
+                "Video width (\(Int(naturalSize.width))) should match screen width (\(Int(screenSize.width)))")
+        #expect(Int(naturalSize.height) == Int(screenSize.height),
+                "Video height (\(Int(naturalSize.height))) should match screen height (\(Int(screenSize.height)))")
+
+        // Verify duration — 10 frames at 10fps = ~1 second
+        let duration = try await asset.load(.duration)
+        let durationSeconds = CMTimeGetSeconds(duration)
+        #expect(durationSeconds > 0.5, "Video should be at least 0.5s (got \(durationSeconds)s)")
+        #expect(durationSeconds < 5.0, "Video should be under 5s (got \(durationSeconds)s)")
+
+        // Verify file size is non-trivial (a real video, not an empty container)
         let attrs = try FileManager.default.attributesOfItem(atPath: outputPath)
         let fileSize = attrs[.size] as? Int ?? 0
-        #expect(fileSize > 1000, "MP4 should have substantial data (\(fileSize) bytes)")
+        #expect(fileSize > 10_000, "MP4 should have substantial data (\(fileSize) bytes)")
     }
 }
 
