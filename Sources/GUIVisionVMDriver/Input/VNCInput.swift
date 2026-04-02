@@ -86,11 +86,53 @@ public enum VNCInput {
         }
     }
 
+    // MARK: - Key Down / Up
+
+    /// Send a key-down event (without releasing).
+    public static func keyDown(_ key: String, platform: Platform?, connection: VNCConnection) throws {
+        let keyCode = try PlatformKeymap.keyCode(for: key)
+        if useRawKeysyms {
+            connection.keyDownRaw(keyCode.rawValue)
+        } else {
+            connection.keyDown(keyCode)
+        }
+    }
+
+    /// Send a key-up event.
+    public static func keyUp(_ key: String, platform: Platform?, connection: VNCConnection) throws {
+        let keyCode = try PlatformKeymap.keyCode(for: key)
+        if useRawKeysyms {
+            connection.keyUpRaw(keyCode.rawValue)
+        } else {
+            connection.keyUp(keyCode)
+        }
+    }
+
     // MARK: - Mouse
 
     /// Move mouse pointer to absolute coordinates.
     public static func mouseMove(x: UInt16, y: UInt16, connection: VNCConnection) {
         connection.mouseMove(x: x, y: y)
+    }
+
+    /// Send a mouse-button-down event at coordinates.
+    public static func mouseDown(
+        x: UInt16, y: UInt16,
+        button: String = "left",
+        connection: VNCConnection
+    ) throws {
+        let btn = try PlatformKeymap.mouseButton(for: button)
+        connection.mouseButtonDown(btn, x: x, y: y)
+    }
+
+    /// Send a mouse-button-up event at coordinates.
+    public static func mouseUp(
+        x: UInt16, y: UInt16,
+        button: String = "left",
+        connection: VNCConnection
+    ) throws {
+        let btn = try PlatformKeymap.mouseButton(for: button)
+        connection.mouseButtonUp(btn, x: x, y: y)
     }
 
     /// Click at coordinates with optional button and count.

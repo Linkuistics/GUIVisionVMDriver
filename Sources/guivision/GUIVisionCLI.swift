@@ -9,6 +9,7 @@ struct GUIVisionCLI: AsyncParsableCommand {
         version: "0.1.0",
         subcommands: [
             ScreenshotCommand.self,
+            ScreenSizeCommand.self,
             InputCommand.self,
             SSHCommand.self,
             RecordCommand.self,

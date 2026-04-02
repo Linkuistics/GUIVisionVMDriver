@@ -7,8 +7,12 @@ struct InputCommand: AsyncParsableCommand {
         abstract: "Send keyboard and mouse input",
         subcommands: [
             KeyPressCommand.self,
+            KeyDownCommand.self,
+            KeyUpCommand.self,
             TypeCommand.self,
             ClickCommand.self,
+            MouseDownCommand.self,
+            MouseUpCommand.self,
             MoveCommand.self,
             ScrollCommand.self,
             DragCommand.self,
@@ -38,6 +42,48 @@ struct KeyPressCommand: AsyncParsableCommand {
             try VNCInput.pressKey(key, modifiers: mods, platform: spec.platform, connection: conn)
         }
         print("Key pressed: \(key)\(mods.isEmpty ? "" : " + \(mods.joined(separator: "+"))")")
+    }
+}
+
+struct KeyDownCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "key-down", abstract: "Send key-down (without releasing)")
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Argument(help: "Key name (e.g. shift, cmd, a)")
+    var key: String
+
+    mutating func run() async throws {
+        let spec = try connection.resolve()
+        let capture = VNCCapture(spec: spec.vnc)
+        try await capture.connect()
+        defer { Task { await capture.disconnect() } }
+
+        try await capture.withConnection { conn in
+            try VNCInput.keyDown(key, platform: spec.platform, connection: conn)
+        }
+        print("Key down: \(key)")
+    }
+}
+
+struct KeyUpCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "key-up", abstract: "Send key-up (release)")
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Argument(help: "Key name (e.g. shift, cmd, a)")
+    var key: String
+
+    mutating func run() async throws {
+        let spec = try connection.resolve()
+        let capture = VNCCapture(spec: spec.vnc)
+        try await capture.connect()
+        defer { Task { await capture.disconnect() } }
+
+        try await capture.withConnection { conn in
+            try VNCInput.keyUp(key, platform: spec.platform, connection: conn)
+        }
+        print("Key up: \(key)")
     }
 }
 
@@ -89,6 +135,60 @@ struct ClickCommand: AsyncParsableCommand {
             try VNCInput.click(x: UInt16(x), y: UInt16(y), button: button, count: count, connection: conn)
         }
         print("Clicked at (\(x), \(y)) button=\(button) count=\(count)")
+    }
+}
+
+struct MouseDownCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "mouse-down", abstract: "Press mouse button (without releasing)")
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Argument(help: "X coordinate")
+    var x: Int
+
+    @Argument(help: "Y coordinate")
+    var y: Int
+
+    @Option(name: .shortAndLong, help: "Mouse button (left, right, middle)")
+    var button: String = "left"
+
+    mutating func run() async throws {
+        let spec = try connection.resolve()
+        let capture = VNCCapture(spec: spec.vnc)
+        try await capture.connect()
+        defer { Task { await capture.disconnect() } }
+
+        try await capture.withConnection { conn in
+            try VNCInput.mouseDown(x: UInt16(x), y: UInt16(y), button: button, connection: conn)
+        }
+        print("Mouse down at (\(x), \(y)) button=\(button)")
+    }
+}
+
+struct MouseUpCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "mouse-up", abstract: "Release mouse button")
+
+    @OptionGroup var connection: ConnectionOptions
+
+    @Argument(help: "X coordinate")
+    var x: Int
+
+    @Argument(help: "Y coordinate")
+    var y: Int
+
+    @Option(name: .shortAndLong, help: "Mouse button (left, right, middle)")
+    var button: String = "left"
+
+    mutating func run() async throws {
+        let spec = try connection.resolve()
+        let capture = VNCCapture(spec: spec.vnc)
+        try await capture.connect()
+        defer { Task { await capture.disconnect() } }
+
+        try await capture.withConnection { conn in
+            try VNCInput.mouseUp(x: UInt16(x), y: UInt16(y), button: button, connection: conn)
+        }
+        print("Mouse up at (\(x), \(y)) button=\(button)")
     }
 }
 
