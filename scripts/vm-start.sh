@@ -134,6 +134,7 @@ fi
 if $_VIEWER; then
     echo "Opening VNC viewer..."
     open "$_VNC_URL"
+
     # Auto-type the VNC password via AppleScript (like TestAnyware does)
     if [[ -n "$_VNC_PASS" ]]; then
         sleep 2
@@ -143,6 +144,20 @@ if $_VIEWER; then
                 keystroke return
             end tell
         " 2>/dev/null || echo "(Could not auto-type VNC password)"
+    fi
+
+    # Record the AXIdentifier of the new window so vm-stop.sh can close
+    # exactly this window without affecting other Screen Sharing sessions.
+    sleep 1
+    _WINDOW_ID=$(osascript -e '
+        tell application "System Events"
+            tell process "Screen Sharing"
+                return value of attribute "AXIdentifier" of window 1
+            end tell
+        end tell
+    ' 2>/dev/null || echo "")
+    if [[ -n "$_WINDOW_ID" ]]; then
+        export GUIVISION_VM_VIEWER_WINDOW_ID="$_WINDOW_ID"
     fi
 fi
 
