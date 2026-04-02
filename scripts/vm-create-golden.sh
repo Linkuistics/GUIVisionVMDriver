@@ -184,14 +184,14 @@ vm_ssh "defaults write com.apple.Terminal NSQuitAlwaysKeepsWindows -bool false"
 # --- Set solid wallpaper ---
 # A solid background makes visual processing of screenshots more reliable.
 # We compile a tiny helper on the host (needs AppKit/NSWorkspace) and SCP
-# it to the VM since the vanilla image has no dev tools.
+# it to the VM since the vanilla image has no dev tools yet.
 
 echo "Setting wallpaper to solid gray..."
 _HELPER_SRC="$(cd "$(dirname "$0")" && pwd)/helpers/set-wallpaper.swift"
 _HELPER_BIN=$(mktemp)
 if [[ -f "$_HELPER_SRC" ]] && swiftc -o "$_HELPER_BIN" "$_HELPER_SRC" 2>/dev/null; then
-    # Create a 1x1 gray PNG and scale it up with sips (built-in, no Xcode needed)
-    vm_ssh 'echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADklEQVQI12NgYPj/HwADBwIAMCbHYQAAAABJRU5ErkJggg==" | base64 -d > /tmp/solid.png && sips -z 1080 1920 /tmp/solid.png >/dev/null 2>&1 && mkdir -p ~/Pictures && mv /tmp/solid.png ~/Pictures/solid_gray.png'
+    # Create a 1x1 mid-gray (128,128,128) PNG and scale it with sips
+    vm_ssh 'echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNoaGgAAAMEAYFL09IQAAAAAElFTkSuQmCC" | base64 -d > /tmp/solid.png && sips -z 1080 1920 /tmp/solid.png >/dev/null 2>&1 && mkdir -p ~/Pictures && mv /tmp/solid.png ~/Pictures/solid_gray.png'
     vm_scp "$_HELPER_BIN" "/tmp/set-wallpaper"
     vm_ssh "chmod +x /tmp/set-wallpaper && /tmp/set-wallpaper /Users/$_VANILLA_USER/Pictures/solid_gray.png && rm /tmp/set-wallpaper"
 else
@@ -199,12 +199,40 @@ else
 fi
 rm -f "$_HELPER_BIN"
 
-# --- Remove desktop widgets ---
+# --- Hide desktop widgets ---
 
-echo "Removing desktop widgets..."
-vm_ssh "defaults write com.apple.notificationcenterui widgets -dict vers -int 1"
-vm_ssh "killall NotificationCenter 2>/dev/null || true"
-sleep 1
+echo "Hiding desktop widgets..."
+vm_ssh "defaults write com.apple.WindowManager StandardHideWidgets -bool true"
+
+# --- Install Xcode Command Line Tools ---
+
+echo "Installing Xcode Command Line Tools (this takes a few minutes)..."
+vm_ssh "touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"
+_CLT_LABEL=$(vm_ssh "softwareupdate -l 2>&1 | grep -B 1 'Command Line Tools' | grep '\\*' | head -1 | sed 's/^.*\\* Label: //'" || true)
+if [[ -n "$_CLT_LABEL" ]]; then
+    echo "  Found: $_CLT_LABEL"
+    vm_ssh "softwareupdate --install '$_CLT_LABEL' --verbose 2>&1 | tail -1"
+    vm_ssh "rm -f /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"
+    if vm_ssh "xcode-select -p" &>/dev/null; then
+        echo "  Xcode CLI tools installed."
+    else
+        echo "  WARNING: Xcode CLI tools installation may have failed"
+    fi
+else
+    echo "  WARNING: Could not find Xcode CLI tools in software update — skipping"
+    vm_ssh "rm -f /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"
+fi
+
+# --- Install Homebrew ---
+
+echo "Installing Homebrew..."
+vm_ssh 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+vm_ssh 'echo '\''eval "$(/opt/homebrew/bin/brew shellenv)"'\'' >> ~/.zprofile'
+if vm_ssh "/opt/homebrew/bin/brew --version" &>/dev/null; then
+    echo "  Homebrew installed."
+else
+    echo "  WARNING: Homebrew installation may have failed"
+fi
 
 # --- Close Terminal and clean desktop state ---
 # The vanilla image boots with Terminal open from the previous session.
