@@ -4,6 +4,12 @@
 # Usage:
 #   source scripts/vm-stop.sh
 
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "ERROR: This script must be sourced, not executed."
+    echo "  source scripts/vm-stop.sh"
+    exit 1
+fi
+
 _NAME="${GUIVISION_VM_NAME:-guivision-inttest}"
 _PID="${GUIVISION_VM_PID:-}"
 _WINDOW_ID="${GUIVISION_VM_VIEWER_WINDOW_ID:-}"

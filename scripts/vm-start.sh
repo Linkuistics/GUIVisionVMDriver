@@ -24,6 +24,13 @@
 # Clean up:
 #   source scripts/vm-stop.sh
 
+# Detect if run as subprocess instead of sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "ERROR: This script must be sourced, not executed."
+    echo "  source scripts/vm-start.sh $*"
+    exit 1
+fi
+
 set -euo pipefail
 
 # Defaults
