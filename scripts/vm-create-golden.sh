@@ -235,25 +235,41 @@ else
 fi
 
 # --- Close Terminal and clean desktop state ---
-# The vanilla image boots with Terminal open from the previous session.
-# We need to quit it cleanly so it doesn't reopen on next boot.
 
 echo "Closing Terminal..."
 vm_ssh "osascript -e 'tell application \"Terminal\" to quit' 2>/dev/null || true"
 sleep 2
-
-# Clear any saved application state left behind
 vm_ssh "rm -rf ~/Library/Saved\ Application\ State/*" 2>/dev/null || true
 
+# --- Logout cycle ---
+# A logout/login cycle is needed for loginwindow to pick up defaults changes
+# (widget hiding, session restore, wallpaper). Without this, the settings
+# are written but the running session still shows the old state.
+
+echo -n "Logging out to apply settings..."
+vm_ssh "sudo launchctl bootout gui/\$(id -u)" 2>/dev/null || true
+
+# Wait for SSH to drop (logout) then come back (auto-login)
+sleep 5
+for i in $(seq 1 60); do
+    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+           -o LogLevel=ERROR -o ConnectTimeout=5 \
+           "$_VANILLA_USER@$_IP" "true" &>/dev/null; then
+        echo " logged back in."
+        break
+    fi
+    echo -n "."
+    sleep 3
+done
+
+# Give the desktop a moment to fully load after login
+sleep 5
+
 # --- Shutdown ---
-# Use osascript for a clean loginwindow shutdown sequence, which properly
-# records that no apps are open. Falls back to sudo shutdown if osascript fails.
 
 echo "Shutting down VM..."
-vm_ssh "osascript -e 'tell application \"System Events\" to shut down'" 2>/dev/null \
-    || vm_ssh "sudo shutdown -h now" 2>/dev/null || true
+vm_ssh "sudo shutdown -h now" 2>/dev/null || true
 
-# Wait for tart process to exit (VM fully stopped)
 echo -n "Waiting for shutdown..."
 for i in $(seq 1 60); do
     if ! kill -0 "$_TART_PID" 2>/dev/null; then
@@ -263,7 +279,6 @@ for i in $(seq 1 60); do
     echo -n "."
     sleep 2
 done
-# Force stop if still running
 if kill -0 "$_TART_PID" 2>/dev/null; then
     echo " forcing stop."
     tart stop "$_SETUP_VM" 2>/dev/null || true
