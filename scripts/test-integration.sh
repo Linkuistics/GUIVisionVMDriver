@@ -16,7 +16,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-_BASE="testanyware-golden-tahoe"
+_BASE="guivision-golden-tahoe"
 _NAME="guivision-inttest"
 _VIEWER=false
 _SSH=true
@@ -73,17 +73,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Check base image exists
+# Check base image exists, offer to create if missing
 _VM_LIST=$(tart list --format json 2>/dev/null || echo "[]")
 if ! echo "$_VM_LIST" | grep -q "\"$_BASE\""; then
-    echo "ERROR: Base image '$_BASE' not found."
-    echo "Available images:"
-    echo "$_VM_LIST" | python3 -c "
-import sys, json
-for vm in json.load(sys.stdin):
-    print(f'  {vm[\"Name\"]}  ({vm[\"State\"]})')
-" 2>/dev/null || tart list 2>/dev/null
-    exit 1
+    echo "Base image '$_BASE' not found."
+    echo "Create it now with: scripts/vm-create-golden.sh"
+    echo ""
+    read -p "Create it now? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        scripts/vm-create-golden.sh
+        _VM_LIST=$(tart list --format json 2>/dev/null || echo "[]")
+    else
+        exit 1
+    fi
 fi
 
 # Stop existing VM if running

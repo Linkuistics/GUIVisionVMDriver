@@ -27,7 +27,7 @@
 set -euo pipefail
 
 # Defaults
-_BASE="testanyware-golden-tahoe"
+_BASE="guivision-golden-tahoe"
 _NAME="guivision-inttest"
 _VIEWER=false
 _SSH=true
