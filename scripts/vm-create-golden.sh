@@ -181,16 +181,24 @@ vm_ssh "defaults write com.apple.loginwindow TALLogoutSavesState -bool false"
 vm_ssh "defaults write com.apple.loginwindow LoginwindowLaunchesRelaunchApps -bool false"
 vm_ssh "defaults write com.apple.Terminal NSQuitAlwaysKeepsWindows -bool false"
 
-# --- Clean desktop state ---
+# --- Close Terminal and clean desktop state ---
+# The vanilla image boots with Terminal open from the previous session.
+# We need to quit it cleanly so it doesn't reopen on next boot.
 
-echo "Cleaning desktop state..."
+echo "Closing Terminal..."
+vm_ssh "osascript -e 'tell application \"Terminal\" to quit' 2>/dev/null || true"
+sleep 2
+
+# Clear any saved application state left behind
 vm_ssh "rm -rf ~/Library/Saved\ Application\ State/*" 2>/dev/null || true
-vm_ssh "killall Terminal 2>/dev/null; killall Finder 2>/dev/null" || true
 
 # --- Shutdown ---
+# Use osascript for a clean loginwindow shutdown sequence, which properly
+# records that no apps are open. Falls back to sudo shutdown if osascript fails.
 
 echo "Shutting down VM..."
-vm_ssh "sudo shutdown -h now" 2>/dev/null || true
+vm_ssh "osascript -e 'tell application \"System Events\" to shut down'" 2>/dev/null \
+    || vm_ssh "sudo shutdown -h now" 2>/dev/null || true
 
 # Wait for tart process to exit (VM fully stopped)
 echo -n "Waiting for shutdown..."
