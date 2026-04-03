@@ -9,6 +9,12 @@
 # Options:
 #   --version VERSION   Windows version (default: 11)
 #   --name NAME         Golden image name (default: guivision-golden-windows-VERSION)
+#   --vhdx PATH         Path to a Windows 11 ARM64 evaluation VHDX file
+#
+# The --vhdx option is required on first run (unless a cached qcow2 already
+# exists at ~/.guivision/cache/). Download the VHDX from:
+#   https://www.microsoft.com/en-us/evalcenter/download-windows-11-enterprise
+# Select "Windows 11 Enterprise", "ARM64", and VHDX format.
 #
 # Prerequisites:
 #   - qemu-system-aarch64 installed (brew install qemu)
@@ -48,22 +54,16 @@ _QEMU_PID=""
 _SWTPM_PID=""
 _ASKPASS_FILE=""
 _GOLDEN_DONE=false
+_VHDX_PATH=""
 
 _GOLDEN_DIR="$HOME/.guivision/golden"
 _CACHE_DIR="$HOME/.guivision/cache"
-
-# IMPORTANT: This URL is a placeholder. The actual download URL for the
-# Windows 11 ARM64 evaluation VHDX changes periodically. To find the current URL:
-#   1. Visit https://www.microsoft.com/en-us/evalcenter/download-windows-11-enterprise
-#   2. Select "Windows 11 Enterprise" and "ARM64"
-#   3. Copy the download link for the VHDX format
-# The evaluation image is valid for 90 days from first boot.
-_VHDX_URL="https://TODO-UPDATE-WITH-ACTUAL-MICROSOFT-DOWNLOAD-URL"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --version) _VERSION="$2"; shift 2 ;;
         --name)    _NAME="$2"; shift 2 ;;
+        --vhdx)    _VHDX_PATH="$2"; shift 2 ;;
         *)         echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -148,26 +148,33 @@ fi
 
 # --- Download and convert evaluation VHDX ---
 
-_CACHED_VHDX="$_CACHE_DIR/windows-${_VERSION}-arm64-eval.vhdx"
 _CACHED_QCOW2="$_CACHE_DIR/windows-${_VERSION}-arm64-eval.qcow2"
 
 if [[ -f "$_CACHED_QCOW2" ]]; then
     echo "Using cached qcow2: $_CACHED_QCOW2"
 else
-    if [[ -f "$_CACHED_VHDX" ]]; then
-        echo "Using cached VHDX: $_CACHED_VHDX"
-    else
-        echo "Downloading Windows $_VERSION ARM64 evaluation VHDX..."
-        echo "  URL: $_VHDX_URL"
-        if [[ "$_VHDX_URL" == *"TODO"* ]]; then
-            echo ""
-            echo "ERROR: The VHDX download URL is a placeholder."
-            echo "Please update _VHDX_URL in this script with the actual Microsoft download URL."
-            echo "Visit: https://www.microsoft.com/en-us/evalcenter/download-windows-11-enterprise"
+    # Need a VHDX to convert — either from --vhdx flag or already cached
+    _CACHED_VHDX="$_CACHE_DIR/windows-${_VERSION}-arm64-eval.vhdx"
+
+    if [[ -n "$_VHDX_PATH" ]]; then
+        if [[ ! -f "$_VHDX_PATH" ]]; then
+            echo "ERROR: VHDX file not found: $_VHDX_PATH"
             exit 1
         fi
-        curl -L -o "$_CACHED_VHDX" "$_VHDX_URL"
-        echo "  Download complete."
+        echo "Copying VHDX to cache..."
+        cp "$_VHDX_PATH" "$_CACHED_VHDX"
+    elif [[ -f "$_CACHED_VHDX" ]]; then
+        echo "Using cached VHDX: $_CACHED_VHDX"
+    else
+        echo "ERROR: No Windows ARM64 evaluation VHDX available."
+        echo ""
+        echo "Download one from Microsoft and pass it with --vhdx:"
+        echo "  1. Visit https://www.microsoft.com/en-us/evalcenter/download-windows-11-enterprise"
+        echo "  2. Select ARM64 and VHDX format"
+        echo "  3. Run: $0 --vhdx /path/to/downloaded.vhdx"
+        echo ""
+        echo "The VHDX is cached after first use, so subsequent runs won't need it."
+        exit 1
     fi
 
     echo "Converting VHDX to qcow2 (this may take a few minutes)..."
