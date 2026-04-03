@@ -169,7 +169,17 @@ fi
 
 echo "Installing Ubuntu Desktop (this takes several minutes)..."
 vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q"
-vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-desktop-minimal"
+
+# Prevent services from auto-starting during install. Without this,
+# packages like gdm3 and gnome-remote-desktop try to start daemons
+# that hang waiting for hardware/display that doesn't exist yet.
+vm_ssh "sudo mkdir -p /usr/sbin && echo -e '#!/bin/sh\nexit 101' | sudo tee /usr/sbin/policy-rc.d > /dev/null && sudo chmod +x /usr/sbin/policy-rc.d"
+
+vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' ubuntu-desktop-minimal"
+
+# Remove the policy-rc.d so services start normally on boot
+vm_ssh "sudo rm -f /usr/sbin/policy-rc.d"
+
 echo "  Ubuntu Desktop installed."
 
 # --- Configure GDM autologin ---
