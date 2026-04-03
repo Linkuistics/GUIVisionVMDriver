@@ -12,30 +12,30 @@ import GUIVisionVMDriver
 /// No VM management — the caller is responsible for providing a running VM.
 ///
 /// Required:
-///   GUIVISION_TEST_VNC=host:port          VNC endpoint
+///   GUIVISION_VNC=host:port          VNC endpoint
 ///
 /// Optional:
-///   GUIVISION_TEST_VNC_PASSWORD=secret    VNC password
-///   GUIVISION_TEST_SSH=user@host[:port]   SSH endpoint (enables SSH tests)
-///   GUIVISION_TEST_PLATFORM=macos         Platform hint (default: macos)
+///   GUIVISION_VNC_PASSWORD=secret    VNC password
+///   GUIVISION_SSH=user@host[:port]   SSH endpoint (enables SSH tests)
+///   GUIVISION_PLATFORM=macos         Platform hint (default: macos)
 ///   GUIVISION_SKIP_INTEGRATION=1          Skip all integration tests
 ///
 /// Example with tart:
-///   tart clone testanyware-golden-tahoe test-vm
+///   tart clone guivision-golden-macos-tahoe test-vm
 ///   tart run test-vm --no-graphics --vnc-experimental &
 ///   # parse VNC URL from tart output, get IP via `tart ip test-vm`
-///   GUIVISION_TEST_VNC=localhost:5901 \
-///   GUIVISION_TEST_VNC_PASSWORD=abc123 \
-///   GUIVISION_TEST_SSH=admin@192.168.64.100 \
+///   GUIVISION_VNC=localhost:5901 \
+///   GUIVISION_VNC_PASSWORD=abc123 \
+///   GUIVISION_SSH=admin@192.168.64.100 \
 ///   swift test --filter IntegrationTests
 enum TestEnv {
     static let spec: ConnectionSpec? = {
-        guard let vnc = ProcessInfo.processInfo.environment["GUIVISION_TEST_VNC"] else {
+        guard let vnc = ProcessInfo.processInfo.environment["GUIVISION_VNC"] else {
             return nil
         }
-        let password = ProcessInfo.processInfo.environment["GUIVISION_TEST_VNC_PASSWORD"]
-        let ssh = ProcessInfo.processInfo.environment["GUIVISION_TEST_SSH"]
-        let platform = ProcessInfo.processInfo.environment["GUIVISION_TEST_PLATFORM"]
+        let password = ProcessInfo.processInfo.environment["GUIVISION_VNC_PASSWORD"]
+        let ssh = ProcessInfo.processInfo.environment["GUIVISION_SSH"]
+        let platform = ProcessInfo.processInfo.environment["GUIVISION_PLATFORM"]
 
         guard var spec = try? ConnectionSpec.from(vnc: vnc, ssh: ssh, platform: platform) else {
             return nil
@@ -63,14 +63,14 @@ enum TestEnv {
 
 @Suite("VNC Integration",
        .enabled(if: ProcessInfo.processInfo.environment["GUIVISION_SKIP_INTEGRATION"] != "1"
-                && ProcessInfo.processInfo.environment["GUIVISION_TEST_VNC"] != nil),
+                && ProcessInfo.processInfo.environment["GUIVISION_VNC"] != nil),
        .serialized)
 struct VNCIntegrationTests {
 
     // MARK: - Connection
 
     @Test func connectsAndReportsScreenSize() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -82,7 +82,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func reconnectsAfterDisconnect() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
 
         try await capture.connect(timeout: .seconds(30))
@@ -100,7 +100,7 @@ struct VNCIntegrationTests {
     // MARK: - Screenshot Capture
 
     @Test func capturesFullScreenshot() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -112,7 +112,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func capturesValidPNG() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -132,7 +132,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func capturesCroppedRegion() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -144,7 +144,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func consecutiveScreenshotsSameSize() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -159,7 +159,7 @@ struct VNCIntegrationTests {
     // MARK: - Mouse Input
 
     @Test func mouseMoveAndCaptureWorkTogether() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -175,7 +175,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func mouseClickAccepted() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -196,7 +196,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func mouseDragCompletesWithoutError() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -210,7 +210,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func scrollAccepted() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -226,7 +226,7 @@ struct VNCIntegrationTests {
     // MARK: - Keyboard Input
 
     @Test func specialKeysAccepted() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -246,7 +246,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func modifierCombinationsAccepted() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -259,7 +259,7 @@ struct VNCIntegrationTests {
     }
 
     @Test func typeTextExercisesShiftedChars() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -274,7 +274,7 @@ struct VNCIntegrationTests {
     // MARK: - Cursor State
 
     @Test func cursorStateAccessibleAfterMovement() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -293,7 +293,7 @@ struct VNCIntegrationTests {
     // MARK: - Streaming Capture
 
     @Test func recordsVideoFromLiveVNC() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
         defer { Task { await capture.disconnect() } }
@@ -346,14 +346,14 @@ struct VNCIntegrationTests {
 
 @Suite("SSH Integration",
        .enabled(if: ProcessInfo.processInfo.environment["GUIVISION_SKIP_INTEGRATION"] != "1"
-                && ProcessInfo.processInfo.environment["GUIVISION_TEST_SSH"] != nil),
+                && ProcessInfo.processInfo.environment["GUIVISION_SSH"] != nil),
        .serialized)
 struct SSHIntegrationTests {
 
     // MARK: - Command Execution
 
     @Test func execSimpleCommand() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
         let result = try client.exec("echo hello")
         #expect(result.succeeded)
         #expect(result.stdout == "hello")
@@ -361,14 +361,14 @@ struct SSHIntegrationTests {
     }
 
     @Test func execCommandWithArguments() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
         let result = try client.exec("uname -s")
         #expect(result.succeeded)
         #expect(result.stdout == "Darwin")
     }
 
     @Test func execCommandCapturesStderr() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
         let result = try client.exec("ls /nonexistent-path-12345")
         #expect(!result.succeeded)
         #expect(result.exitCode != 0)
@@ -376,14 +376,14 @@ struct SSHIntegrationTests {
     }
 
     @Test func execCommandReturnsExitCode() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
         let result = try client.exec("exit 42")
         #expect(result.exitCode == 42)
         #expect(!result.succeeded)
     }
 
     @Test func execMultilineOutput() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
         let result = try client.exec("echo 'line1'; echo 'line2'; echo 'line3'")
         #expect(result.succeeded)
         let lines = result.stdout.split(separator: "\n")
@@ -395,7 +395,7 @@ struct SSHIntegrationTests {
     // MARK: - SCP File Transfer
 
     @Test func uploadAndVerifyFile() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
 
         let testContent = "GUIVisionVMDriver upload test — \(UUID().uuidString)"
         let localPath = NSTemporaryDirectory() + "guivision-upload-\(UUID().uuidString).txt"
@@ -415,7 +415,7 @@ struct SSHIntegrationTests {
     }
 
     @Test func downloadFile() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
 
         let testContent = "GUIVisionVMDriver download test — \(UUID().uuidString)"
         let remotePath = "/tmp/guivision-download-test.txt"
@@ -436,7 +436,7 @@ struct SSHIntegrationTests {
     }
 
     @Test func uploadDownloadRoundtrip() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
 
         let testData = Data((0..<256).map { UInt8($0) })
         let localUploadPath = NSTemporaryDirectory() + "guivision-roundtrip-up-\(UUID().uuidString).bin"
@@ -463,8 +463,8 @@ struct SSHIntegrationTests {
     // MARK: - VNC + SSH Cross-verification
 
     @Test func vncInputReachesVM() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_TEST_VNC not set")
-        let client = try #require(TestEnv.ssh, "GUIVISION_TEST_SSH not set")
+        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
+        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
 
         let capture = VNCCapture(spec: spec.vnc)
         try await capture.connect(timeout: .seconds(30))
