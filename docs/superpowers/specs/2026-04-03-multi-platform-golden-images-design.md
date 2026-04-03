@@ -24,6 +24,11 @@ All platforms share:
 - Notifications, widgets, and session restore disabled
 - Golden images are never run directly; clone for each test session
 
+**SSH shell per platform:**
+- macOS: `zsh` (default shell)
+- Linux: `bash` (default shell)
+- Windows: `PowerShell` (OpenSSH for Windows default) — not bash or cmd
+
 ## Golden Image Naming
 
 - macOS: `guivision-golden-macos-{version}` (e.g. `guivision-golden-macos-tahoe`)
