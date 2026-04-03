@@ -136,7 +136,9 @@ Tests run against a real macOS VM via [tart](https://tart.run). A golden VM imag
 Create the golden image (one-time, ~10 minutes):
 
 ```bash
-scripts/vm-create-golden.sh
+scripts/vm-create-golden-macos.sh    # macOS (tart)
+scripts/vm-create-golden-linux.sh    # Linux (tart)
+scripts/vm-create-golden-windows.sh  # Windows (QEMU)
 ```
 
 ### Running tests
@@ -171,14 +173,16 @@ swift test
 
 | Script | How to run | What it does |
 |--------|-----------|--------------|
-| `scripts/vm-create-golden.sh` | `./scripts/vm-create-golden.sh` | Create golden VM image with SSH + Xcode + Homebrew |
+| `scripts/vm-create-golden-macos.sh` | `./scripts/vm-create-golden-macos.sh` | Create macOS golden VM image (tart) with SSH + Xcode + Homebrew |
+| `scripts/vm-create-golden-linux.sh` | `./scripts/vm-create-golden-linux.sh` | Create Linux golden VM image (tart) with SSH + dev tools |
+| `scripts/vm-create-golden-windows.sh` | `./scripts/vm-create-golden-windows.sh` | Create Windows golden VM image (QEMU) with SSH + dev tools |
 | `scripts/test-integration.sh` | `./scripts/test-integration.sh` | Start VM, run integration tests, stop VM |
 | `scripts/vm-start.sh` | `source scripts/vm-start.sh` | Start VM, set env vars in current shell |
 | `scripts/vm-stop.sh` | `source scripts/vm-stop.sh` | Stop VM, clean env vars |
 
 ## Golden Image Contents
 
-The golden image (`guivision-golden-tahoe`) includes:
+The macOS golden image (`guivision-golden-macos-tahoe`) includes:
 
 - **macOS Tahoe** (Apple Silicon, via Cirrus Labs vanilla image)
 - **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin`

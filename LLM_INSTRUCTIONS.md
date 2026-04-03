@@ -179,7 +179,7 @@ This project does not manage VMs. Use [tart](https://tart.run) directly:
 tart list
 
 # Clone and start a VM
-tart clone guivision-golden-tahoe my-test-vm
+tart clone guivision-golden-macos-tahoe my-test-vm
 tart run my-test-vm --no-graphics --vnc-experimental > /tmp/vnc.txt 2>&1 &
 
 # Parse VNC URL from tart's stdout (format: vnc://:password@host:port)
@@ -205,8 +205,9 @@ These scripts automate common tart workflows for this project's integration test
 
 ```bash
 # Create golden VM image (one-time, ~10 min)
-# Installs: SSH key auth, Xcode CLI tools, Homebrew, solid wallpaper, no widgets
-scripts/vm-create-golden.sh
+scripts/vm-create-golden-macos.sh    # macOS (tart): SSH key auth, Xcode CLI tools, Homebrew, solid wallpaper
+scripts/vm-create-golden-linux.sh    # Linux (tart): SSH key auth, dev tools, solid wallpaper
+scripts/vm-create-golden-windows.sh  # Windows (QEMU): SSH key auth, dev tools, solid wallpaper
 
 # Run integration tests (starts VM, tests, stops VM)
 scripts/test-integration.sh
@@ -222,14 +223,14 @@ source scripts/vm-stop.sh
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `GUIVISION_TEST_VNC` | `127.0.0.1:59948` | VNC endpoint |
-| `GUIVISION_TEST_VNC_PASSWORD` | `syrup-rotate-nasty` | VNC password |
-| `GUIVISION_TEST_SSH` | `admin@192.168.64.100` | SSH endpoint |
-| `GUIVISION_TEST_PLATFORM` | `macos` | Platform hint |
+| `GUIVISION_VNC` | `127.0.0.1:59948` | VNC endpoint |
+| `GUIVISION_VNC_PASSWORD` | `syrup-rotate-nasty` | VNC password |
+| `GUIVISION_SSH` | `admin@192.168.64.100` | SSH endpoint |
+| `GUIVISION_PLATFORM` | `macos` | Platform hint |
 
 ## Golden Image Contents
 
-The golden image (`guivision-golden-tahoe`) provides:
+The macOS golden image (`guivision-golden-macos-tahoe`) provides:
 
 - **macOS Tahoe** on Apple Silicon
 - **User:** `admin` with SSH key auth (host's public key in `authorized_keys`)
@@ -257,23 +258,23 @@ When writing a script that tests GUI behavior on a macOS VM:
 source scripts/vm-start.sh
 
 # Open Terminal inside the VM
-guivision ssh exec --ssh "$GUIVISION_TEST_SSH" "open -a Terminal"
+guivision ssh exec --ssh "$GUIVISION_SSH" "open -a Terminal"
 sleep 5
 
 # Click on Terminal window to focus it
-SIZE=$(guivision screen-size --vnc "$GUIVISION_TEST_VNC")
+SIZE=$(guivision screen-size --vnc "$GUIVISION_VNC")
 CX=$((${SIZE%x*} / 2))
 CY=$((${SIZE#*x} / 2))
-guivision input click --vnc "$GUIVISION_TEST_VNC" $CX $CY
+guivision input click --vnc "$GUIVISION_VNC" $CX $CY
 sleep 1
 
 # Type a command
-guivision input type --vnc "$GUIVISION_TEST_VNC" "echo hello > /tmp/test.txt"
-guivision input key --vnc "$GUIVISION_TEST_VNC" return
+guivision input type --vnc "$GUIVISION_VNC" "echo hello > /tmp/test.txt"
+guivision input key --vnc "$GUIVISION_VNC" return
 sleep 2
 
 # Verify via SSH
-RESULT=$(guivision ssh exec --ssh "$GUIVISION_TEST_SSH" "cat /tmp/test.txt")
+RESULT=$(guivision ssh exec --ssh "$GUIVISION_SSH" "cat /tmp/test.txt")
 echo "Got: $RESULT"
 
 source scripts/vm-stop.sh

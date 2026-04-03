@@ -3,11 +3,11 @@
 # Deletes any existing golden image with the same name first.
 #
 # Usage:
-#   scripts/vm-create-golden.sh [options]
+#   scripts/vm-create-golden-macos.sh [options]
 #
 # Options:
 #   --version VERSION   macOS version: tahoe, sequoia, sonoma (default: tahoe)
-#   --name NAME         Golden image name (default: guivision-golden-VERSION)
+#   --name NAME         Golden image name (default: guivision-golden-macos-VERSION)
 #
 # Prerequisites:
 #   - tart installed (/opt/homebrew/bin/tart)
@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$_NAME" ]]; then
-    _NAME="guivision-golden-$_VERSION"
+    _NAME="guivision-golden-macos-$_VERSION"
 fi
 
 _VANILLA="ghcr.io/cirruslabs/macos-$_VERSION-vanilla:latest"
