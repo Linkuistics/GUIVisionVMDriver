@@ -19,9 +19,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
     mutating func run() async throws {
         let spec = try connection.resolve()
 
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
         let cropRegion: CGRect?
         if let regionStr = region {
@@ -30,7 +28,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
             cropRegion = nil
         }
 
-        let pngData = try await capture.screenshot(region: cropRegion)
+        let pngData = try await client.screenshot(region: cropRegion)
         let url = URL(fileURLWithPath: output)
         try pngData.write(to: url)
         print("Screenshot saved to \(output) (\(pngData.count) bytes)")
