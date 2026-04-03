@@ -92,12 +92,12 @@ All endpoints are served over the Unix domain socket.
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
-| POST | `/record/start` | `{"output":"recording.mp4","fps":30,"region":"x,y,w,h"}` (region optional) | `{"ok":true}` |
+| POST | `/record/start` | `{"output":"recording.mp4","fps":30,"duration":60,"region":"x,y,w,h"}` (region optional) | `{"ok":true}` |
 | POST | `/record/stop` | — | `{"ok":true}` |
 
-The server runs the capture loop internally — it already holds the `VNCCapture` and can write frames directly to the `StreamingCapture` writer without serializing frame data over the socket. Only one recording can be active at a time; starting a second returns an error.
+`duration` is required and capped at 300 seconds (5 minutes). The server runs the capture loop internally — it already holds the `VNCCapture` and can write frames directly to the `StreamingCapture` writer without serializing frame data over the socket. Only one recording can be active at a time; starting a second returns an error.
 
-The idle timer is suspended while a recording is active (the server must stay alive even if no other requests arrive).
+The recording auto-stops when the duration elapses. The client can also call `/record/stop` early. The idle timer is suspended while a recording is active but the duration cap guarantees the server cannot be pinned alive indefinitely by a crashed client.
 
 ### Server Control
 
