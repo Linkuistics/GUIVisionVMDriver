@@ -6,7 +6,7 @@
 #   scripts/vm-create-golden-linux.sh [options]
 #
 # Options:
-#   --version VERSION   Ubuntu version codename (default: noble)
+#   --version VERSION   Ubuntu version number: 24.04, 22.04 (default: 24.04)
 #   --name NAME         Golden image name (default: guivision-golden-linux-VERSION)
 #
 # Prerequisites:
@@ -24,11 +24,12 @@
 
 set -eu
 
-_VERSION="noble"
+_VERSION="24.04"
 _NAME=""
 _VANILLA_USER="admin"
 _VANILLA_PASS="admin"
 _SETUP_VM="guivision-setup-$$"
+_ASKPASS_FILE=""
 _SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=30"
 
 while [[ $# -gt 0 ]]; do

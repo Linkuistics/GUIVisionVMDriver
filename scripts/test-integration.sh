@@ -16,7 +16,7 @@
 #
 # Platform defaults for --base:
 #   macos   → guivision-golden-macos-tahoe
-#   linux   → guivision-golden-linux-noble
+#   linux   → guivision-golden-linux-24.04
 #   windows → guivision-golden-windows-11
 #
 # Exported env vars (consumed by Swift integration tests):
@@ -59,7 +59,7 @@ case "$_PLATFORM" in
         _TOOL="tart"
         ;;
     linux)
-        [[ -z "$_BASE" ]] && _BASE="guivision-golden-linux-noble"
+        [[ -z "$_BASE" ]] && _BASE="guivision-golden-linux-24.04"
         _TOOL="tart"
         ;;
     windows)
