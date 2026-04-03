@@ -180,9 +180,9 @@ vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q"
 vm_ssh "echo -e '#!/bin/sh\nexit 101' | sudo tee /usr/sbin/policy-rc.d > /dev/null && sudo chmod +x /usr/sbin/policy-rc.d"
 vm_ssh "sudo dpkg-divert --local --rename --add /usr/bin/systemctl && sudo ln -sf /bin/true /usr/bin/systemctl"
 
-# Mark the firefox snap package as held — it fails to install when
-# snapd can't start (due to our systemctl divert), and we don't need
-# a browser in a GUI testing golden image anyway.
+# Hold firefox during the main install — it's a snap package that
+# requires snapd to be running, which our systemctl divert prevents.
+# We install it after restoring systemctl (see below).
 vm_ssh "sudo apt-mark hold firefox 2>/dev/null || true"
 
 vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' ubuntu-desktop-minimal"
@@ -192,6 +192,12 @@ vm_ssh "sudo rm -f /usr/bin/systemctl && sudo dpkg-divert --local --rename --rem
 vm_ssh "sudo rm -f /usr/sbin/policy-rc.d"
 
 echo "  Ubuntu Desktop installed."
+
+# Now install Firefox — snapd can run with systemctl restored
+echo "Installing Firefox (snap)..."
+vm_ssh "sudo apt-mark unhold firefox 2>/dev/null || true"
+vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y firefox"
+echo "  Firefox installed."
 
 # --- Configure GDM autologin ---
 
