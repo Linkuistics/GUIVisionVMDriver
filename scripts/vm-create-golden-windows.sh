@@ -9,12 +9,18 @@
 # Options:
 #   --version VERSION   Windows version (default: 11)
 #   --name NAME         Golden image name (default: guivision-golden-windows-VERSION)
-#   --vhdx PATH         Path to a Windows 11 ARM64 evaluation VHDX file
+#   --iso PATH          Path to a Windows 11 ARM64 evaluation ISO file
 #
-# The --vhdx option is required on first run (unless a cached qcow2 already
-# exists at ~/.guivision/cache/). Download the VHDX from:
-#   https://www.microsoft.com/en-us/evalcenter/download-windows-11-enterprise
-# Select "Windows 11 Enterprise", "ARM64", and VHDX format.
+# The --iso option is required on first run (unless a cached install already
+# exists at ~/.guivision/cache/). Download the ISO from:
+#   https://www.microsoft.com/en-us/software-download/windows11arm64
+# Download the ARM64 ISO from that page.
+#
+# The Windows installation must be completed manually via VNC during setup.
+# The script boots from the ISO, prints VNC connection info, and waits for
+# you to complete the install. Create a user named 'admin' with password
+# 'admin' during the OOBE. Once at the desktop, the script continues
+# automatically when SSH becomes reachable.
 #
 # Prerequisites:
 #   - qemu-system-aarch64 installed (brew install qemu)
@@ -23,7 +29,7 @@
 #   - SSH public key at ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub
 #
 # What this creates:
-#   A QEMU VM built from a Microsoft evaluation VHDX with:
+#   A QEMU VM installed from a Microsoft evaluation ISO with:
 #   - Local 'admin' account with SSH key auth
 #   - Autologin configured for 'admin'
 #   - OpenSSH Server installed and running
@@ -54,7 +60,7 @@ _QEMU_PID=""
 _SWTPM_PID=""
 _ASKPASS_FILE=""
 _GOLDEN_DONE=false
-_VHDX_PATH=""
+_ISO_PATH=""
 
 _GOLDEN_DIR="$HOME/.guivision/golden"
 _CACHE_DIR="$HOME/.guivision/cache"
@@ -63,7 +69,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --version) _VERSION="$2"; shift 2 ;;
         --name)    _NAME="$2"; shift 2 ;;
-        --vhdx)    _VHDX_PATH="$2"; shift 2 ;;
+        --iso)     _ISO_PATH="$2"; shift 2 ;;
         *)         echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -146,47 +152,32 @@ if [[ -f "$_GOLDEN_DIR/$_NAME.qcow2" ]]; then
     rm -rf "$_GOLDEN_DIR/$_NAME-tpm"
 fi
 
-# --- Download and convert evaluation VHDX ---
+# --- Locate ISO and prepare setup disk ---
 
-_CACHED_QCOW2="$_CACHE_DIR/windows-${_VERSION}-arm64-eval.qcow2"
+_CACHED_ISO="$_CACHE_DIR/windows-${_VERSION}-arm64-eval.iso"
 
-if [[ -f "$_CACHED_QCOW2" ]]; then
-    echo "Using cached qcow2: $_CACHED_QCOW2"
-else
-    # Need a VHDX to convert — either from --vhdx flag or already cached
-    _CACHED_VHDX="$_CACHE_DIR/windows-${_VERSION}-arm64-eval.vhdx"
-
-    if [[ -n "$_VHDX_PATH" ]]; then
-        if [[ ! -f "$_VHDX_PATH" ]]; then
-            echo "ERROR: VHDX file not found: $_VHDX_PATH"
-            exit 1
-        fi
-        echo "Copying VHDX to cache..."
-        cp "$_VHDX_PATH" "$_CACHED_VHDX"
-    elif [[ -f "$_CACHED_VHDX" ]]; then
-        echo "Using cached VHDX: $_CACHED_VHDX"
-    else
-        echo "ERROR: No Windows ARM64 evaluation VHDX available."
-        echo ""
-        echo "Download one from Microsoft and pass it with --vhdx:"
-        echo "  1. Visit https://www.microsoft.com/en-us/evalcenter/download-windows-11-enterprise"
-        echo "  2. Select ARM64 and VHDX format"
-        echo "  3. Run: $0 --vhdx /path/to/downloaded.vhdx"
-        echo ""
-        echo "The VHDX is cached after first use, so subsequent runs won't need it."
+if [[ -n "$_ISO_PATH" ]]; then
+    if [[ ! -f "$_ISO_PATH" ]]; then
+        echo "ERROR: ISO file not found: $_ISO_PATH"
         exit 1
     fi
-
-    echo "Converting VHDX to qcow2 (this may take a few minutes)..."
-    qemu-img convert -f vhdx -O qcow2 "$_CACHED_VHDX" "$_CACHED_QCOW2"
-    echo "  Conversion complete."
+    echo "Copying ISO to cache..."
+    cp "$_ISO_PATH" "$_CACHED_ISO"
+elif [[ ! -f "$_CACHED_ISO" ]]; then
+    echo "ERROR: No Windows ARM64 evaluation ISO available."
+    echo ""
+    echo "Download one from Microsoft and pass it with --iso:"
+    echo "  1. Visit https://www.microsoft.com/en-us/software-download/windows11arm64"
+    echo "  2. Download the ARM64 ISO"
+    echo "  3. Run: $0 --iso /path/to/downloaded.iso"
+    echo ""
+    echo "The ISO is cached after first use, so subsequent runs won't need --iso."
+    exit 1
 fi
 
-# Create a working copy for setup
-echo "Creating setup disk from cached image..."
-cp "$_CACHED_QCOW2" "$_SETUP_QCOW2"
-# Resize disk to give Windows room to install updates/features
-qemu-img resize "$_SETUP_QCOW2" 64G
+# Create a blank disk for Windows installation
+echo "Creating setup disk (64GB)..."
+qemu-img create -f qcow2 "$_SETUP_QCOW2" 64G
 
 # --- Prepare UEFI and TPM ---
 
@@ -231,8 +222,8 @@ echo "  swtpm running (PID: $_SWTPM_PID)"
 
 # --- Boot with QEMU ---
 
-echo "Booting Windows VM with QEMU..."
-echo "  VNC available at vnc://localhost:590${_VNC_DISPLAY}"
+echo "Booting Windows VM from ISO with QEMU..."
+echo "  VNC: vnc://localhost:590${_VNC_DISPLAY}"
 echo "  SSH will be forwarded on localhost:$_SSH_PORT"
 
 qemu-system-aarch64 \
@@ -245,29 +236,53 @@ qemu-system-aarch64 \
     -chardev "socket,id=chrtpm,path=$_TPM_SOCKET" \
     -tpmdev "emulator,id=tpm0,chardev=chrtpm" \
     -device "tpm-tis-sysbus,tpmdev=tpm0" \
-    -drive "file=$_SETUP_QCOW2,if=virtio,format=qcow2" \
-    -nic "user,model=virtio-net-pci,hostfwd=tcp::${_SSH_PORT}-:22" \
+    -drive "file=$_SETUP_QCOW2,if=none,id=hd0,format=qcow2" \
+    -device "nvme,serial=guivision,drive=hd0" \
+    -drive "file=$_CACHED_ISO,media=cdrom,readonly=on" \
+    -boot d \
+    -device "virtio-net-pci,netdev=net0" \
+    -netdev "user,id=net0,hostfwd=tcp::${_SSH_PORT}-:22" \
     -vnc ":${_VNC_DISPLAY}" \
     -display none &
 _QEMU_PID=$!
 
-sleep 1
+sleep 2
 if ! kill -0 "$_QEMU_PID" 2>/dev/null; then
     echo "ERROR: QEMU does not appear to have started"
     exit 1
 fi
 echo "  QEMU running (PID: $_QEMU_PID)"
 
-# --- Set up SSH_ASKPASS for password auth ---
-# NOTE: The initial password for the evaluation image is uncertain.
-# Common defaults include no password, "Password1", or "Passw0rd!".
-# Update _INITIAL_PASS if the evaluation image uses a different password.
+# --- Manual Windows installation via VNC ---
 
-_INITIAL_PASS=""
+echo ""
+echo "=========================================================="
+echo "  MANUAL STEP: Complete the Windows installation via VNC"
+echo "=========================================================="
+echo ""
+echo "  Connect with:  open vnc://localhost:590${_VNC_DISPLAY}"
+echo ""
+echo "  During the OOBE, create a LOCAL account:"
+echo "    Username: admin"
+echo "    Password: admin"
+echo ""
+echo "  Tips:"
+echo "    - Choose 'I don't have internet' when prompted for network"
+echo "      (or use 'OOBE\\BYPASSNRO' at Shift+F10 command prompt)"
+echo "    - Choose 'Set up for personal use' / 'Offline account'"
+echo "    - Skip all optional features and privacy settings"
+echo ""
+echo "  The script will continue automatically once the desktop"
+echo "  is ready and SSH becomes reachable."
+echo "=========================================================="
+echo ""
+
+# --- Set up SSH_ASKPASS for password auth (admin/admin) ---
+
 _ASKPASS_FILE=$(mktemp)
 cat > "$_ASKPASS_FILE" << EOF
 #!/bin/bash
-echo '$_INITIAL_PASS'
+echo '$_ADMIN_PASS'
 EOF
 chmod 700 "$_ASKPASS_FILE"
 export SSH_ASKPASS="$_ASKPASS_FILE"
@@ -275,15 +290,19 @@ export SSH_ASKPASS_REQUIRE="force"
 export DISPLAY=:0
 
 # --- Wait for SSH ---
-# NOTE: The Windows evaluation image may not have SSH pre-installed.
-# If this wait times out, you may need to:
-#   1. Connect via VNC (vnc://localhost:5901) to complete initial Windows setup
-#   2. Manually install OpenSSH Server via Settings > Optional Features
-#   3. Re-run this script once SSH is available
-# The initial OOBE (Out of Box Experience) can take 5-15 minutes.
+# Windows install + OOBE takes 15-30 minutes. SSH won't be available
+# until after the install completes AND OpenSSH Server is installed
+# (done by this script in the next phase). So first we wait for the
+# install to finish by checking if QEMU is still running, then we
+# install OpenSSH via PowerShell over VNC (or the user does it manually).
+#
+# Since SSH isn't available until we install it, we poll for it with
+# a very long timeout. If the user enables SSH manually during OOBE
+# it will be detected. Otherwise, this section will time out and
+# provide instructions.
 
-echo ""
-echo "Waiting for Windows to boot and SSH to become available..."
+echo "Waiting for SSH on localhost:$_SSH_PORT..."
+echo "(This waits up to 60 minutes for install + SSH to become available)"
 echo "  This can take 10-15 minutes for initial OOBE setup."
 echo "  If it times out, connect via VNC to complete setup manually."
 echo -n "Waiting for SSH..."

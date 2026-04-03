@@ -140,15 +140,17 @@ scripts/vm-create-golden-macos.sh    # macOS (tart)
 scripts/vm-create-golden-linux.sh    # Linux (tart)
 ```
 
-For Windows, first download the Windows 11 ARM64 evaluation VHDX from
-[Microsoft's Evaluation Center](https://www.microsoft.com/en-us/evalcenter/download-windows-11-enterprise)
-(select ARM64, VHDX format), then pass it to the script:
+For Windows, first download the Windows 11 ARM64 ISO from
+[Microsoft](https://www.microsoft.com/en-us/software-download/windows11arm64),
+then pass it to the script:
 
 ```bash
-scripts/vm-create-golden-windows.sh --vhdx ~/Downloads/Windows11_ARM64.vhdx
+scripts/vm-create-golden-windows.sh --iso ~/Downloads/Win11_ARM64.iso
 ```
 
-The VHDX is cached after first use — subsequent runs don't need `--vhdx`.
+The ISO is cached after first use — subsequent runs don't need `--iso`.
+The Windows installation requires a manual step via VNC during setup
+(the script prints instructions and waits).
 
 ### Running tests
 
@@ -184,7 +186,7 @@ swift test
 |--------|-----------|--------------|
 | `scripts/vm-create-golden-macos.sh` | `./scripts/vm-create-golden-macos.sh` | Create macOS golden VM image (tart) with SSH + Xcode + Homebrew |
 | `scripts/vm-create-golden-linux.sh` | `./scripts/vm-create-golden-linux.sh` | Create Linux golden VM image (tart) with SSH + dev tools |
-| `scripts/vm-create-golden-windows.sh` | `./scripts/vm-create-golden-windows.sh --vhdx <path>` | Create Windows golden VM image (QEMU) with SSH; requires downloaded VHDX on first run |
+| `scripts/vm-create-golden-windows.sh` | `./scripts/vm-create-golden-windows.sh --iso <path>` | Create Windows golden VM image (QEMU) with SSH; requires downloaded ISO on first run |
 | `scripts/test-integration.sh` | `./scripts/test-integration.sh` | Start VM, run integration tests, stop VM |
 | `scripts/vm-start.sh` | `source scripts/vm-start.sh` | Start VM, set env vars in current shell |
 | `scripts/vm-stop.sh` | `source scripts/vm-stop.sh` | Stop VM, clean env vars |

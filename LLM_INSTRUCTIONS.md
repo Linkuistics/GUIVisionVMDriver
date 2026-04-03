@@ -207,7 +207,7 @@ These scripts automate common tart workflows for this project's integration test
 # Create golden VM image (one-time, ~10 min)
 scripts/vm-create-golden-macos.sh    # macOS (tart): SSH key auth, Xcode CLI tools, Homebrew, solid wallpaper
 scripts/vm-create-golden-linux.sh    # Linux (tart): SSH key auth, dev tools, solid wallpaper
-scripts/vm-create-golden-windows.sh --vhdx ~/Downloads/Win11.vhdx  # Windows (QEMU): needs VHDX from Microsoft Evaluation Center
+scripts/vm-create-golden-windows.sh --iso ~/Downloads/Win11_ARM64.iso  # Windows (QEMU): needs ISO from microsoft.com/en-us/software-download/windows11arm64
 
 # Run integration tests (starts VM, tests, stops VM)
 scripts/test-integration.sh
