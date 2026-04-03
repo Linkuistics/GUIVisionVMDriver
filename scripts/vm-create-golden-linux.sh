@@ -180,6 +180,11 @@ vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q"
 vm_ssh "echo -e '#!/bin/sh\nexit 101' | sudo tee /usr/sbin/policy-rc.d > /dev/null && sudo chmod +x /usr/sbin/policy-rc.d"
 vm_ssh "sudo dpkg-divert --local --rename --add /usr/bin/systemctl && sudo ln -sf /bin/true /usr/bin/systemctl"
 
+# Mark the firefox snap package as held — it fails to install when
+# snapd can't start (due to our systemctl divert), and we don't need
+# a browser in a GUI testing golden image anyway.
+vm_ssh "sudo apt-mark hold firefox 2>/dev/null || true"
+
 vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' ubuntu-desktop-minimal"
 
 # Restore systemctl and policy-rc.d so services start normally on boot
