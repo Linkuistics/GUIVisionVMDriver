@@ -33,14 +33,10 @@ struct KeyPressCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
         let mods = modifiers?.split(separator: ",").map(String.init) ?? []
-        try await capture.withConnection { conn in
-            try VNCInput.pressKey(key, modifiers: mods, platform: spec.platform, connection: conn)
-        }
+        try await client.pressKey(key, modifiers: mods)
         print("Key pressed: \(key)\(mods.isEmpty ? "" : " + \(mods.joined(separator: "+"))")")
     }
 }
@@ -55,13 +51,9 @@ struct KeyDownCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
-        try await capture.withConnection { conn in
-            try VNCInput.keyDown(key, platform: spec.platform, connection: conn)
-        }
+        try await client.keyDown(key)
         print("Key down: \(key)")
     }
 }
@@ -76,13 +68,9 @@ struct KeyUpCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
-        try await capture.withConnection { conn in
-            try VNCInput.keyUp(key, platform: spec.platform, connection: conn)
-        }
+        try await client.keyUp(key)
         print("Key up: \(key)")
     }
 }
@@ -97,13 +85,9 @@ struct TypeCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
-        try await capture.withConnection { conn in
-            VNCInput.typeText(text, connection: conn)
-        }
+        try await client.typeText(text)
         print("Typed: \(text)")
     }
 }
@@ -127,13 +111,9 @@ struct ClickCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
-        try await capture.withConnection { conn in
-            try VNCInput.click(x: UInt16(x), y: UInt16(y), button: button, count: count, connection: conn)
-        }
+        try await client.click(x: x, y: y, button: button, count: count)
         print("Clicked at (\(x), \(y)) button=\(button) count=\(count)")
     }
 }
@@ -154,13 +134,9 @@ struct MouseDownCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
-        try await capture.withConnection { conn in
-            try VNCInput.mouseDown(x: UInt16(x), y: UInt16(y), button: button, connection: conn)
-        }
+        try await client.mouseDown(x: x, y: y, button: button)
         print("Mouse down at (\(x), \(y)) button=\(button)")
     }
 }
@@ -181,13 +157,9 @@ struct MouseUpCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
-        try await capture.withConnection { conn in
-            try VNCInput.mouseUp(x: UInt16(x), y: UInt16(y), button: button, connection: conn)
-        }
+        try await client.mouseUp(x: x, y: y, button: button)
         print("Mouse up at (\(x), \(y)) button=\(button)")
     }
 }
@@ -205,13 +177,9 @@ struct MoveCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
-        try await capture.withConnection { conn in
-            VNCInput.mouseMove(x: UInt16(x), y: UInt16(y), connection: conn)
-        }
+        try await client.mouseMove(x: x, y: y)
         print("Mouse moved to (\(x), \(y))")
     }
 }
@@ -235,13 +203,9 @@ struct ScrollCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
-        try await capture.withConnection { conn in
-            VNCInput.scroll(x: UInt16(x), y: UInt16(y), deltaX: dx, deltaY: dy, connection: conn)
-        }
+        try await client.scroll(x: x, y: y, dx: dx, dy: dy)
         print("Scrolled at (\(x), \(y)) dx=\(dx) dy=\(dy)")
     }
 }
@@ -271,15 +235,9 @@ struct DragCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-        defer { Task { await capture.disconnect() } }
+        let client = try await ServerClient.ensure(spec: spec)
 
-        try await capture.withConnection { conn in
-            try VNCInput.drag(fromX: UInt16(fromX), fromY: UInt16(fromY),
-                              toX: UInt16(toX), toY: UInt16(toY),
-                              button: button, steps: steps, connection: conn)
-        }
+        try await client.drag(fromX: fromX, fromY: fromY, toX: toX, toY: toY, button: button, steps: steps)
         print("Dragged from (\(fromX),\(fromY)) to (\(toX),\(toY))")
     }
 }
