@@ -26,7 +26,7 @@ All platforms share:
 
 ## Golden Image Naming
 
-- macOS: `guivision-golden-{version}` (e.g. `guivision-golden-tahoe`)
+- macOS: `guivision-golden-macos-{version}` (e.g. `guivision-golden-macos-tahoe`)
 - Linux: `guivision-golden-linux-{version}` (e.g. `guivision-golden-linux-noble`)
 - Windows: `guivision-golden-windows-{version}` (e.g. `guivision-golden-windows-11`)
 
@@ -70,7 +70,7 @@ Renamed from `vm-create-golden.sh`. No functional changes beyond updating env va
 ### Options
 
 - `--version VERSION` — macOS version: tahoe, sequoia, sonoma (default: tahoe)
-- `--name NAME` — Golden image name (default: `guivision-golden-{version}`)
+- `--name NAME` — Golden image name (default: `guivision-golden-macos-{version}`)
 
 ---
 
@@ -174,7 +174,7 @@ Existing options (`--base`, `--name`, `--viewer`, `--no-ssh`) remain.
 
 ### Default base image per platform
 
-- `macos` → `guivision-golden-tahoe`
+- `macos` → `guivision-golden-macos-tahoe`
 - `linux` → `guivision-golden-linux-noble`
 - `windows` → `guivision-golden-windows-11`
 
