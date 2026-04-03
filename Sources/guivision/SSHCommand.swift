@@ -24,8 +24,8 @@ struct ExecCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let client = try SSHClient(connectionSpec: spec)
-        let result = try client.exec(command)
+        let client = try await ServerClient.ensure(spec: spec)
+        let result = try await client.sshExec(command)
         if !result.stdout.isEmpty { print(result.stdout) }
         if !result.stderr.isEmpty { FileHandle.standardError.write(Data((result.stderr + "\n").utf8)) }
         if !result.succeeded {
@@ -47,11 +47,8 @@ struct UploadCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let client = try SSHClient(connectionSpec: spec)
-        let result = try client.upload(localPath: localPath, remotePath: remotePath)
-        if !result.succeeded {
-            throw ValidationError("Upload failed: \(result.stderr)")
-        }
+        let client = try await ServerClient.ensure(spec: spec)
+        try await client.sshUpload(localPath: localPath, remotePath: remotePath)
         print("Uploaded \(localPath) → \(remotePath)")
     }
 }
@@ -69,11 +66,8 @@ struct DownloadCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-        let client = try SSHClient(connectionSpec: spec)
-        let result = try client.download(remotePath: remotePath, localPath: localPath)
-        if !result.succeeded {
-            throw ValidationError("Download failed: \(result.stderr)")
-        }
+        let client = try await ServerClient.ensure(spec: spec)
+        try await client.sshDownload(remotePath: remotePath, localPath: localPath)
         print("Downloaded \(remotePath) → \(localPath)")
     }
 }
