@@ -1,5 +1,13 @@
 import CryptoKit
+import Darwin
 import Foundation
+
+// MARK: - Transport errors
+
+public enum ServerClientError: Error, Sendable {
+    case socketCreateFailed(Int32)
+    case connectFailed(Int32)
+}
 
 /// Client-side handle for a per-`ConnectionSpec` server instance.
 ///
@@ -31,6 +39,121 @@ public enum ServerClient {
     /// the `.sock` extension with `.pid`.
     public static func pidPath(for spec: ConnectionSpec) -> String {
         "/tmp/guivision-\(hexPrefix(for: spec)).pid"
+    }
+
+    // MARK: - HTTP transport
+
+    /// Send a single HTTP request to the server socket for `socketPath` and
+    /// return the parsed response.
+    ///
+    /// Connects to the Unix domain socket, writes the serialized request,
+    /// reads the full response (headers + body), and closes the connection.
+    public static func send(_ request: HTTPRequest, to socketPath: String) async throws -> HTTPResponse {
+        // Connect on a background thread so we don't block the cooperative pool.
+        let fd = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
+            let thread = Thread {
+                // Create the socket.
+                let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+                guard fd >= 0 else {
+                    continuation.resume(throwing: ServerClientError.socketCreateFailed(errno))
+                    return
+                }
+
+                // Build sockaddr_un and connect.
+                var addr = sockaddr_un()
+                addr.sun_family = sa_family_t(AF_UNIX)
+                withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+                    ptr.withMemoryRebound(to: CChar.self, capacity: 104) { cptr in
+                        _ = strlcpy(cptr, socketPath, 104)
+                    }
+                }
+                let result = withUnsafePointer(to: &addr) { ptr in
+                    ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sptr in
+                        Darwin.connect(fd, sptr, socklen_t(MemoryLayout<sockaddr_un>.size))
+                    }
+                }
+                guard result == 0 else {
+                    Darwin.close(fd)
+                    continuation.resume(throwing: ServerClientError.connectFailed(errno))
+                    return
+                }
+
+                continuation.resume(returning: fd)
+            }
+            thread.start()
+        }
+
+        defer { Darwin.close(fd) }
+
+        // Write the serialized request.
+        let requestData = HTTPParser.serializeRequest(request)
+        await writeAll(fd: fd, data: requestData)
+
+        // Read the response, accumulating until we can parse it.
+        var buffer = Data()
+        let chunkSize = 65536
+        let headerSeparator = Data("\r\n\r\n".utf8)
+
+        while true {
+            let chunk = await readChunk(fd: fd, maxBytes: chunkSize)
+            if let data = chunk {
+                buffer.append(data)
+            }
+
+            // Once we have the full header block and the declared body bytes, parse.
+            if buffer.range(of: headerSeparator) != nil {
+                // Check if we have all body bytes declared by Content-Length.
+                if let response = try? HTTPParser.parseResponse(from: buffer) {
+                    return response
+                }
+            }
+
+            // Hit EOF/error and still cannot parse.
+            if chunk == nil {
+                // Try one last parse in case the response had no body.
+                return try HTTPParser.parseResponse(from: buffer)
+            }
+        }
+    }
+
+    // MARK: - Private socket helpers
+
+    /// Read up to `maxBytes` from `fd` on a background thread. Returns `nil` on EOF or error.
+    private static func readChunk(fd: Int32, maxBytes: Int) async -> Data? {
+        await withCheckedContinuation { continuation in
+            let thread = Thread {
+                var buf = [UInt8](repeating: 0, count: maxBytes)
+                let n = Darwin.read(fd, &buf, maxBytes)
+                if n > 0 {
+                    continuation.resume(returning: Data(buf[0..<n]))
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+            thread.start()
+        }
+    }
+
+    /// Write all bytes of `data` to `fd` on a background thread, looping until complete or error.
+    private static func writeAll(fd: Int32, data: Data) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let thread = Thread {
+                data.withUnsafeBytes { rawBuf in
+                    guard let base = rawBuf.baseAddress else {
+                        continuation.resume()
+                        return
+                    }
+                    var offset = 0
+                    while offset < data.count {
+                        let n = Darwin.write(fd, base.advanced(by: offset), data.count - offset)
+                        if n <= 0 { break }
+                        offset += n
+                    }
+                }
+                continuation.resume()
+            }
+            thread.start()
+        }
     }
 
     // MARK: - Private helpers

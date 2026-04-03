@@ -33,6 +33,7 @@ public struct HTTPResponse: Sendable {
 public enum HTTPParserError: Error, Sendable {
     case missingHeaderBlock
     case malformedRequestLine(String)
+    case malformedStatusLine(String)
 }
 
 // MARK: - Parser
@@ -94,6 +95,68 @@ public enum HTTPParser: Sendable {
         var result = Data(header.utf8)
         result.append(response.body)
         return result
+    }
+
+    /// Serialize an HTTP/1.1 request to bytes.
+    /// Format: `METHOD PATH HTTP/1.1\r\nContent-Length: N\r\nConnection: close\r\n\r\nbody`
+    /// For requests with no body, Content-Length is omitted.
+    public static func serializeRequest(_ request: HTTPRequest) -> Data {
+        let bodyData = request.body ?? Data()
+        var header = "\(request.method) \(request.path) HTTP/1.1\r\n"
+        if !bodyData.isEmpty {
+            header += "Content-Length: \(bodyData.count)\r\n"
+        }
+        header += "Connection: close\r\n\r\n"
+        var result = Data(header.utf8)
+        result.append(bodyData)
+        return result
+    }
+
+    /// Parse a raw HTTP/1.1 response from bytes.
+    /// Reads the status line for the status code, scans headers for Content-Type,
+    /// reads `Content-Length` bytes for the body.
+    public static func parseResponse(from data: Data) throws -> HTTPResponse {
+        guard let separatorRange = data.range(of: headerSeparator) else {
+            throw HTTPParserError.missingHeaderBlock
+        }
+
+        let headerBlock = data[data.startIndex..<separatorRange.lowerBound]
+        let headerText = String(decoding: headerBlock, as: UTF8.self)
+        let lines = headerText.components(separatedBy: "\r\n")
+
+        // Parse status line: HTTP/1.1 {code} {reason}
+        let statusLine = lines[0]
+        let parts = statusLine.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count >= 2, let statusCode = Int(parts[1]) else {
+            throw HTTPParserError.malformedStatusLine(statusLine)
+        }
+
+        // Scan headers for Content-Type and Content-Length
+        var contentType = "application/octet-stream"
+        var contentLength: Int? = nil
+        for line in lines.dropFirst() {
+            let lower = line.lowercased()
+            if lower.hasPrefix("content-type:") {
+                contentType = line.dropFirst("content-type:".count)
+                    .trimmingCharacters(in: .whitespaces)
+            } else if lower.hasPrefix("content-length:") {
+                let value = line.dropFirst("content-length:".count)
+                    .trimmingCharacters(in: .whitespaces)
+                contentLength = Int(value)
+            }
+        }
+
+        // Read body
+        let bodyStart = separatorRange.upperBound
+        let body: Data
+        if let length = contentLength, length > 0 {
+            let bodyEnd = data.index(bodyStart, offsetBy: length, limitedBy: data.endIndex) ?? data.endIndex
+            body = Data(data[bodyStart..<bodyEnd])
+        } else {
+            body = Data()
+        }
+
+        return HTTPResponse(statusCode: statusCode, contentType: contentType, body: body)
     }
 
     // MARK: - Private

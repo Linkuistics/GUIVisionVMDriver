@@ -100,4 +100,83 @@ struct HTTPParserTests {
             #expect(afterSeparator == body)
         }
     }
+
+    // MARK: - Request Serialization
+
+    @Test func serializesGETWithNoBody() {
+        let request = HTTPRequest(method: "GET", path: "/screenshot")
+        let serialized = HTTPParser.serializeRequest(request)
+        let text = String(decoding: serialized, as: UTF8.self)
+        #expect(text.hasPrefix("GET /screenshot HTTP/1.1\r\n"))
+        #expect(text.contains("Connection: close\r\n"))
+        #expect(text.hasSuffix("\r\n\r\n"))
+        // No body bytes after the header separator
+        let separator = Data("\r\n\r\n".utf8)
+        if let range = serialized.range(of: separator) {
+            #expect(range.upperBound == serialized.endIndex)
+        }
+    }
+
+    @Test func serializesGETOmitsContentLength() {
+        let request = HTTPRequest(method: "GET", path: "/health")
+        let serialized = HTTPParser.serializeRequest(request)
+        let text = String(decoding: serialized, as: UTF8.self)
+        #expect(!text.contains("Content-Length:"))
+    }
+
+    @Test func serializesPOSTWithJSONBody() {
+        let body = Data(#"{"action":"click"}"#.utf8)
+        let request = HTTPRequest(method: "POST", path: "/click", body: body)
+        let serialized = HTTPParser.serializeRequest(request)
+        let text = String(decoding: serialized, as: UTF8.self)
+        #expect(text.hasPrefix("POST /click HTTP/1.1\r\n"))
+        #expect(text.contains("Content-Length: \(body.count)\r\n"))
+        #expect(text.contains("Connection: close\r\n"))
+        #expect(serialized.suffix(body.count) == body)
+    }
+
+    // MARK: - Response Parsing
+
+    @Test func parses200WithJSONBody() throws {
+        let body = Data(#"{"ok":true}"#.utf8)
+        let raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n" + String(decoding: body, as: UTF8.self)
+        let response = try HTTPParser.parseResponse(from: Data(raw.utf8))
+        #expect(response.statusCode == 200)
+        #expect(response.contentType == "application/json")
+        #expect(response.body == body)
+    }
+
+    @Test func parses200WithPNGBody() throws {
+        let body = Data([0x89, 0x50, 0x4E, 0x47]) // PNG header bytes
+        let header = "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\n"
+        var raw = Data(header.utf8)
+        raw.append(body)
+        let response = try HTTPParser.parseResponse(from: raw)
+        #expect(response.statusCode == 200)
+        #expect(response.contentType == "image/png")
+        #expect(response.body == body)
+    }
+
+    @Test func parses404ErrorResponse() throws {
+        let body = Data(#"{"error":"not found"}"#.utf8)
+        let raw = "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n" + String(decoding: body, as: UTF8.self)
+        let response = try HTTPParser.parseResponse(from: Data(raw.utf8))
+        #expect(response.statusCode == 404)
+        #expect(response.contentType == "application/json")
+        #expect(response.body == body)
+    }
+
+    @Test func parseResponseRejectsMissingHeaderBlock() {
+        let raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain"
+        #expect(throws: HTTPParserError.self) {
+            try HTTPParser.parseResponse(from: Data(raw.utf8))
+        }
+    }
+
+    @Test func parseResponseRejectsMalformedStatusLine() {
+        let raw = "NOTHTTP\r\n\r\n"
+        #expect(throws: HTTPParserError.self) {
+            try HTTPParser.parseResponse(from: Data(raw.utf8))
+        }
+    }
 }

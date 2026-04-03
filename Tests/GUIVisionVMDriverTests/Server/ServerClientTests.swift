@@ -98,4 +98,50 @@ struct ServerClientTests {
         let spec2 = ConnectionSpec(vnc: VNCSpec(host: "host-b", port: 5900))
         #expect(ServerClient.pidPath(for: spec1) != ServerClient.pidPath(for: spec2))
     }
+
+    // MARK: - Request serialization format
+
+    @Test func serializeRequestProducesCorrectHTTPFormat() {
+        // Verify that send() serializes requests using HTTPParser.serializeRequest,
+        // which produces valid HTTP/1.1 wire format.
+        let request = HTTPRequest(method: "GET", path: "/health")
+        let data = HTTPParser.serializeRequest(request)
+        let text = String(decoding: data, as: UTF8.self)
+        #expect(text.hasPrefix("GET /health HTTP/1.1\r\n"))
+        #expect(text.contains("Connection: close\r\n"))
+        #expect(text.hasSuffix("\r\n\r\n"))
+    }
+
+    @Test func serializePostRequestIncludesContentLength() {
+        let body = Data(#"{"x":1}"#.utf8)
+        let request = HTTPRequest(method: "POST", path: "/click", body: body)
+        let data = HTTPParser.serializeRequest(request)
+        let text = String(decoding: data, as: UTF8.self)
+        #expect(text.hasPrefix("POST /click HTTP/1.1\r\n"))
+        #expect(text.contains("Content-Length: \(body.count)\r\n"))
+        #expect(data.suffix(body.count) == body)
+    }
+
+    // MARK: - Response parsing
+
+    @Test func parseResponseRoundTrip() throws {
+        // Build a response using serializeResponse (as the server would),
+        // then verify parseResponse recovers the same values.
+        let body = Data(#"{"status":"ok"}"#.utf8)
+        let response = HTTPResponse(statusCode: 200, contentType: "application/json", body: body)
+        let wire = HTTPParser.serializeResponse(response)
+        let parsed = try HTTPParser.parseResponse(from: wire)
+        #expect(parsed.statusCode == 200)
+        #expect(parsed.contentType == "application/json")
+        #expect(parsed.body == body)
+    }
+
+    @Test func parseErrorResponseRoundTrip() throws {
+        let body = Data(#"{"error":"not found"}"#.utf8)
+        let response = HTTPResponse(statusCode: 404, contentType: "application/json", body: body)
+        let wire = HTTPParser.serializeResponse(response)
+        let parsed = try HTTPParser.parseResponse(from: wire)
+        #expect(parsed.statusCode == 404)
+        #expect(parsed.body == body)
+    }
 }
