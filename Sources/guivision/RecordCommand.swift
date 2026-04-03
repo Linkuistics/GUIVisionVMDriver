@@ -16,7 +16,7 @@ struct RecordCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Frames per second")
     var fps: Int = 30
 
-    @Option(name: .long, help: "Duration in seconds (0 = until Ctrl+C)")
+    @Option(name: .long, help: "Duration in seconds (0 = use max 300s)")
     var duration: Int = 0
 
     @Option(name: .long, help: "Crop region as x,y,width,height")
@@ -24,13 +24,6 @@ struct RecordCommand: AsyncParsableCommand {
 
     mutating func run() async throws {
         let spec = try connection.resolve()
-
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect()
-
-        guard let screenSize = await capture.screenSize() else {
-            throw ValidationError("Could not determine screen size")
-        }
 
         let cropRegion: CGRect?
         if let regionStr = region {
@@ -43,34 +36,23 @@ struct RecordCommand: AsyncParsableCommand {
             cropRegion = nil
         }
 
+        let client = try await ServerClient.ensure(spec: spec)
+
+        // duration 0 originally meant "until Ctrl+C"; map to server's max cap of 300s
+        let effectiveDuration = duration > 0 ? duration : 300
+
+        try await client.recordStart(output: output, fps: fps, duration: effectiveDuration, region: cropRegion)
+
+        let screenSize = try await client.screenSize()
         let recordWidth = Int(cropRegion?.width ?? screenSize.width)
         let recordHeight = Int(cropRegion?.height ?? screenSize.height)
 
-        let config = StreamingCaptureConfig(width: recordWidth, height: recordHeight, fps: fps)
-        let recorder = StreamingCapture()
-        try await recorder.start(outputPath: output, config: config)
-
         print("Recording to \(output) at \(fps) fps (\(recordWidth)x\(recordHeight))...")
-        if duration > 0 {
-            print("Duration: \(duration)s")
-        } else {
-            print("Press Ctrl+C to stop")
-        }
+        print("Duration: \(effectiveDuration)s")
 
-        let interval = Duration.milliseconds(1000 / fps)
-        // Use a very large duration (~100 years) when no duration is specified
-        let effectiveDuration = duration > 0 ? Duration.seconds(duration) : Duration.seconds(100 * 365 * 24 * 3600)
-        let deadline = ContinuousClock.now + effectiveDuration
+        try await Task.sleep(for: .seconds(effectiveDuration))
 
-        while ContinuousClock.now < deadline {
-            if let image = try? await capture.captureImage(region: cropRegion) {
-                try? await recorder.appendFrame(image)
-            }
-            try await Task.sleep(for: interval)
-        }
-
-        try await recorder.stop()
-        await capture.disconnect()
+        try await client.recordStop()
         print("Recording saved to \(output)")
     }
 }
