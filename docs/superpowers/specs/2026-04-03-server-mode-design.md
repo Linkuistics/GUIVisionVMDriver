@@ -88,6 +88,17 @@ All endpoints are served over the Unix domain socket.
 | POST | `/ssh/upload` | `{"localPath":"/a","remotePath":"/b"}` | `{"ok":true}` |
 | POST | `/ssh/download` | `{"remotePath":"/a","localPath":"/b"}` | `{"ok":true}` |
 
+### Recording
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| POST | `/record/start` | `{"output":"recording.mp4","fps":30,"region":"x,y,w,h"}` (region optional) | `{"ok":true}` |
+| POST | `/record/stop` | — | `{"ok":true}` |
+
+The server runs the capture loop internally — it already holds the `VNCCapture` and can write frames directly to the `StreamingCapture` writer without serializing frame data over the socket. Only one recording can be active at a time; starting a second returns an error.
+
+The idle timer is suspended while a recording is active (the server must stay alive even if no other requests arrive).
+
 ### Server Control
 
 | Method | Path | Body | Response |
@@ -144,7 +155,7 @@ let client = try await ServerClient.ensure(spec: spec)
 
 ### Record Command
 
-`RecordCommand` calls `client.screenshotData(region:)` in a loop at the desired FPS, identical to how it currently calls `capture.captureImage()` in a loop. Each request resets the server's idle timer, keeping it alive during recording.
+`RecordCommand` calls `client.recordStart(output:fps:region:)` and `client.recordStop()`. The server runs the capture loop internally using its connected `VNCCapture` and `StreamingCapture`, writing frames directly without serialization overhead. The client blocks waiting for Ctrl+C or the duration to elapse, then calls stop.
 
 ## File Layout
 
