@@ -286,4 +286,25 @@ source scripts/vm-stop.sh
 - Use `screen-size` to compute click coordinates relative to the display
 - The `--platform` flag affects modifier key mapping — use `macos` for tart VMs
 - SSH key auth only; password auth is not supported by the SSH client
-- Multiple `guivision` commands can share a VNC connection if using the library, but each CLI invocation connects/disconnects independently
+
+## Connection Caching (Server Mode)
+
+The CLI transparently manages a background server process that holds persistent VNC and SSH connections. This eliminates per-command connection overhead when running multiple commands in sequence.
+
+### How it works
+
+1. The first `guivision` command auto-starts a background server process that connects to the VNC/SSH endpoints
+2. Subsequent commands reuse the existing server — no reconnection needed
+3. The server self-terminates after 10 seconds of inactivity
+4. Different connection targets (different `--vnc`/`--ssh` values) get independent server instances
+
+### What this means for scripts
+
+- Rapid command sequences are much faster (only the first command pays the connection cost)
+- No user action is required — server lifecycle is fully automatic
+- The server communicates via a Unix domain socket at `/tmp/guivision-<hash>.sock`
+- If a server process crashes or is killed, the next command auto-starts a fresh one
+
+### Recording limits
+
+When recording via the server, duration is required and capped at 300 seconds (5 minutes). Specifying `--duration 0` uses the 300-second cap. This prevents orphaned recording processes.
