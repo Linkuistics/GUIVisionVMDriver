@@ -173,11 +173,17 @@ vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q"
 # Prevent services from auto-starting during install. Without this,
 # packages like gdm3 and gnome-remote-desktop try to start daemons
 # that hang waiting for hardware/display that doesn't exist yet.
-vm_ssh "sudo mkdir -p /usr/sbin && echo -e '#!/bin/sh\nexit 101' | sudo tee /usr/sbin/policy-rc.d > /dev/null && sudo chmod +x /usr/sbin/policy-rc.d"
+# We use two mechanisms:
+#   1. policy-rc.d returning 101 blocks invoke-rc.d calls
+#   2. Diverting systemctl to /bin/true blocks direct systemctl calls
+#      (some packages call systemctl directly, bypassing invoke-rc.d)
+vm_ssh "echo -e '#!/bin/sh\nexit 101' | sudo tee /usr/sbin/policy-rc.d > /dev/null && sudo chmod +x /usr/sbin/policy-rc.d"
+vm_ssh "sudo dpkg-divert --local --rename --add /usr/bin/systemctl && sudo ln -sf /bin/true /usr/bin/systemctl"
 
 vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' ubuntu-desktop-minimal"
 
-# Remove the policy-rc.d so services start normally on boot
+# Restore systemctl and policy-rc.d so services start normally on boot
+vm_ssh "sudo rm -f /usr/bin/systemctl && sudo dpkg-divert --local --rename --remove /usr/bin/systemctl"
 vm_ssh "sudo rm -f /usr/sbin/policy-rc.d"
 
 echo "  Ubuntu Desktop installed."
