@@ -135,6 +135,7 @@ cleanup() {
     fi
     rm -f "$_ASKPASS_FILE" 2>/dev/null || true
     rm -f "$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock" 2>/dev/null || true
+    rm -f "$_CACHE_DIR/${_SETUP_PREFIX}-startup.img" 2>/dev/null || true
     # Clean up setup files only if golden was not finalized
     if ! $_GOLDEN_DONE; then
         rm -f "$_SETUP_QCOW2" 2>/dev/null || true
@@ -196,6 +197,17 @@ fi
 # The UEFI firmware initializes it on first boot.
 truncate -s 64M "$_SETUP_EFIVARS"
 
+# Create a small FAT image with startup.nsh so the UEFI shell
+# auto-boots from the Windows ISO instead of dropping to a prompt.
+_STARTUP_IMG="$_CACHE_DIR/${_SETUP_PREFIX}-startup.img"
+truncate -s 1M "$_STARTUP_IMG"
+/usr/sbin/newfs_msdos -F 12 "$_STARTUP_IMG" >/dev/null 2>&1
+_STARTUP_MNT=$(mktemp -d)
+hdiutil attach -mountpoint "$_STARTUP_MNT" "$_STARTUP_IMG" -nobrowse >/dev/null 2>&1
+echo 'FS0:\EFI\Boot\bootaa64.efi' > "$_STARTUP_MNT/startup.nsh"
+hdiutil detach "$_STARTUP_MNT" >/dev/null 2>&1
+rmdir "$_STARTUP_MNT"
+
 # Create TPM state directory and start swtpm
 mkdir -p "$_SETUP_TPM_DIR"
 _TPM_SOCKET="$_SETUP_TPM_DIR/swtpm-sock"
@@ -236,6 +248,8 @@ qemu-system-aarch64 \
     -device "qemu-xhci" \
     -drive "file=$_CACHED_ISO,if=none,id=cd0,media=cdrom,readonly=on" \
     -device "usb-storage,drive=cd0,bootindex=0" \
+    -drive "file=$_STARTUP_IMG,if=none,id=startup,format=raw,readonly=on" \
+    -device "usb-storage,drive=startup,bootindex=1" \
     -device "virtio-net-pci,netdev=net0" \
     -netdev "user,id=net0,hostfwd=tcp::${_SSH_PORT}-:22" \
     -vnc ":${_VNC_DISPLAY},password=on" \
