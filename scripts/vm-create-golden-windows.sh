@@ -206,14 +206,6 @@ fi
 # The UEFI firmware initializes it on first boot.
 truncate -s 64M "$_SETUP_EFIVARS"
 
-# Create a small FAT12 image with startup.nsh so the UEFI shell
-# auto-boots from the Windows ISO instead of dropping to a prompt.
-# Uses mtools (brew install mtools) to write to the FAT image without mounting.
-_STARTUP_IMG="$_CACHE_DIR/${_SETUP_PREFIX}-startup.img"
-dd if=/dev/zero of="$_STARTUP_IMG" bs=1k count=1440 2>/dev/null
-mformat -i "$_STARTUP_IMG" -f 1440 ::
-echo 'FS0:\EFI\Boot\bootaa64.efi' | mcopy -i "$_STARTUP_IMG" - ::startup.nsh
-
 # Create TPM state directory and start swtpm
 mkdir -p "$_SETUP_TPM_DIR"
 _TPM_SOCKET="$_SETUP_TPM_DIR/swtpm-sock"
@@ -252,11 +244,10 @@ qemu-system-aarch64 \
     -drive "file=$_SETUP_QCOW2,if=none,id=hd0,format=qcow2" \
     -device "nvme,serial=guivision,drive=hd0" \
     -device "qemu-xhci" \
-    -drive "file=$_CACHED_ISO,if=none,id=cd0,media=cdrom,readonly=on" \
-    -device "usb-storage,drive=cd0,bootindex=0" \
-    -drive "file=$_STARTUP_IMG,if=none,id=startup,format=raw,readonly=on" \
-    -device "usb-storage,drive=startup,bootindex=1" \
     -device "usb-kbd" \
+    -device "virtio-scsi-pci,id=scsi0" \
+    -drive "file=$_CACHED_ISO,if=none,id=cd0,media=cdrom,readonly=on" \
+    -device "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0" \
     -device "virtio-net-pci,netdev=net0" \
     -netdev "user,id=net0,hostfwd=tcp::${_SSH_PORT}-:22" \
     -vnc ":${_VNC_DISPLAY},password=on" \
