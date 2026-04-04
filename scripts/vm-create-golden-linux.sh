@@ -170,6 +170,11 @@ fi
 echo "Installing Ubuntu Desktop (this takes several minutes)..."
 vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q"
 
+# Disable needrestart — it tries to restart services after each apt
+# install, which is slow and can hang in a headless VM. We reboot at
+# the end anyway, which restarts everything.
+vm_ssh "sudo mkdir -p /etc/needrestart/conf.d && echo '\$nrconf{restart} = '\"'\"'l'\"'\"';' | sudo tee /etc/needrestart/conf.d/no-restart.conf > /dev/null"
+
 # Prevent services from auto-starting during install. Without this,
 # packages like gdm3 and gnome-remote-desktop try to start daemons
 # that hang waiting for hardware/display that doesn't exist yet.
