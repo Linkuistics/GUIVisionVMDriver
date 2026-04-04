@@ -1,13 +1,13 @@
 import ArgumentParser
+import GUIVisionAgentLib
 
 @main
 struct AgentCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "guivision-agent",
-        abstract: "In-VM accessibility agent for GUI automation"
+        abstract: "In-VM accessibility agent for GUI automation",
+        subcommands: [
+            HealthCommand.self,
+        ]
     )
-
-    func run() async throws {
-        print("guivision-agent: use a subcommand")
-    }
 }
