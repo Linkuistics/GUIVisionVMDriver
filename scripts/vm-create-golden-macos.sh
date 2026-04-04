@@ -401,7 +401,7 @@ _recovery_boot_csrutil() {
         _PW_JSON="\"$_VNC_PASSWORD\""
     fi
     local _CONNECT_SPEC
-    _CONNECT_SPEC=$(mktemp /tmp/guivision-recovery-spec.XXXXXX.json)
+    _CONNECT_SPEC=$(mktemp /tmp/guivision-recovery-XXXXXX)
     cat > "$_CONNECT_SPEC" <<SPECEOF
 {"vnc":{"host":"${_VNC_HOST}","port":${_VNC_PORT},"password":${_PW_JSON}}}
 SPECEOF
