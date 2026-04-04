@@ -317,6 +317,24 @@ _stop_vm_graceful() {
     wait "$_TART_PID" 2>/dev/null || true
 }
 
+# Shared helper: ensure the VM is running and SSH-reachable.
+# If the tart process has exited (e.g. after a logout-triggered reboot),
+# restart it and wait for SSH.
+_ensure_vm_running() {
+    if kill -0 "$_TART_PID" 2>/dev/null; then
+        # VM is still running — verify SSH
+        if ssh $_SSH_OPTS -o ConnectTimeout=5 "$_VANILLA_USER@$_IP" "true" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    echo "VM process exited — restarting..."
+    tart stop "$_SETUP_VM" 2>/dev/null || true
+    wait "$_TART_PID" 2>/dev/null || true
+    tart run "$_SETUP_VM" --no-graphics &
+    _TART_PID=$!
+    _wait_for_ssh_ready
+}
+
 # Shared helper: wait for SSH to become available after a reboot.
 _wait_for_ssh_ready() {
     echo -n "Waiting for SSH..."
@@ -500,15 +518,7 @@ grant_accessibility_permission() {
 
 # --- Run agent installation and TCC/SIP cycle ---
 
-# The logout cycle can sometimes cause the tart process to exit.
-# Ensure the VM is running before proceeding.
-if ! kill -0 "$_TART_PID" 2>/dev/null; then
-    echo "VM process exited during logout cycle. Restarting..."
-    tart run "$_SETUP_VM" --no-graphics &
-    _TART_PID=$!
-    _wait_for_ssh_ready
-fi
-
+_ensure_vm_running
 install_agent
 recovery_boot_disable_sip
 grant_accessibility_permission
