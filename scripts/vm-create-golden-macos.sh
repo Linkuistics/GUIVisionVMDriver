@@ -405,7 +405,8 @@ _recovery_boot_csrutil() {
     cat > "$_CONNECT_SPEC" <<SPECEOF
 {"vnc":{"host":"${_VNC_HOST}","port":${_VNC_PORT},"password":${_PW_JSON}}}
 SPECEOF
-    local _GV="$_GUIVISION_BIN --connect $_CONNECT_SPEC"
+    # --connect must come after the subcommand (swift-argument-parser requirement)
+    local _GV_CONN="--connect $_CONNECT_SPEC"
 
     # Recovery takes a while to reach the options screen.
     echo -n "Waiting for Recovery environment to load (60s)..."
@@ -413,7 +414,7 @@ SPECEOF
     echo " done."
 
     # Take a diagnostic screenshot to verify recovery booted
-    $_GV screenshot --output /tmp/guivision-recovery-pre.png 2>/dev/null || true
+    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-pre.png 2>/dev/null || true
     echo "  Recovery screenshot saved to /tmp/guivision-recovery-pre.png"
 
     # Open Terminal in Recovery via the Utilities menu.
@@ -422,33 +423,33 @@ SPECEOF
     echo "Opening Terminal in Recovery via menu bar..."
 
     # Focus menu bar with Ctrl+F2 (Fn+Ctrl+F2 on Apple keyboards)
-    $_GV input key f2 --modifiers ctrl
+    "$_GUIVISION_BIN" input key $_GV_CONN f2 --modifiers ctrl
     sleep 1
 
     # Navigate to Utilities menu (press right arrow a few times to reach it)
     # Recovery app menu order: Apple (skip), Recovery app, Utilities
-    $_GV input key right
+    "$_GUIVISION_BIN" input key $_GV_CONN right
     sleep 0.3
-    $_GV input key right
+    "$_GUIVISION_BIN" input key $_GV_CONN right
     sleep 0.3
     # Open the Utilities menu
-    $_GV input key return
+    "$_GUIVISION_BIN" input key $_GV_CONN return
     sleep 0.5
     # Terminal is typically the first or second item in Utilities menu
-    $_GV input key down
+    "$_GUIVISION_BIN" input key $_GV_CONN down
     sleep 0.3
-    $_GV input key return
+    "$_GUIVISION_BIN" input key $_GV_CONN return
     sleep 3
 
     # Terminal should now be open. Type the csrutil command.
     echo "Running '${_CSRUTIL_CMD}' in recovery Terminal..."
-    $_GV input type "$_CSRUTIL_CMD"
+    "$_GUIVISION_BIN" input type $_GV_CONN "$_CSRUTIL_CMD"
     sleep 0.5
-    $_GV input key return
+    "$_GUIVISION_BIN" input key $_GV_CONN return
     sleep 3
 
     # Take a post-command screenshot for verification
-    $_GV screenshot --output /tmp/guivision-recovery-post.png 2>/dev/null || true
+    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-post.png 2>/dev/null || true
     echo "  Post-command screenshot saved to /tmp/guivision-recovery-post.png"
 
     rm -f "$_CONNECT_SPEC"
