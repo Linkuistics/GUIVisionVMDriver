@@ -240,13 +240,61 @@ show-banners=false
 SCHEMA"
 vm_ssh "sudo glib-compile-schemas /usr/share/glib-2.0/schemas/"
 
-# No reboot needed — GDM autologin, GSettings overrides, and all
-# config files are on disk and will take effect on the next boot
-# (when the golden image is cloned and started by vm-start.sh).
-# A reboot here would kill the tart process.
+# --- Shutdown, reboot, and shutdown again ---
+# tart run exits when the guest reboots, so we can't do an in-place
+# reboot. Instead: shutdown → restart tart → wait for GDM autologin
+# and settings to apply → shutdown again → clone.
 
-# --- Shutdown ---
+echo "Shutting down VM for reboot cycle..."
+vm_ssh "sudo shutdown -h now" 2>/dev/null || true
 
+echo -n "Waiting for shutdown..."
+for i in $(seq 1 60); do
+    if ! kill -0 "$_TART_PID" 2>/dev/null; then
+        echo " done."
+        break
+    fi
+    echo -n "."
+    sleep 2
+done
+if kill -0 "$_TART_PID" 2>/dev/null; then
+    echo " forcing stop."
+    tart stop "$_SETUP_VM" 2>/dev/null || true
+    wait "$_TART_PID" 2>/dev/null || true
+fi
+
+# Restart VM so GDM autologin and desktop settings take effect
+echo "Restarting VM to apply settings..."
+tart run "$_SETUP_VM" --no-graphics --vnc-experimental &
+_TART_PID=$!
+
+echo -n "Waiting for SSH..."
+_SSH_BACK=false
+for i in $(seq 1 90); do
+    _IP=$(tart ip "$_SETUP_VM" 2>/dev/null | tr -d '[:space:]' || true)
+    if [[ -n "$_IP" ]]; then
+        if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+               -o LogLevel=ERROR -o ConnectTimeout=5 \
+               "$_VANILLA_USER@$_IP" "true" &>/dev/null; then
+            _SSH_BACK=true
+            echo " back online (IP: $_IP)."
+            break
+        fi
+    fi
+    echo -n "."
+    sleep 3
+done
+
+if ! $_SSH_BACK; then
+    echo ""
+    echo "ERROR: VM did not come back online after restart"
+    exit 1
+fi
+
+# Give the desktop a moment to fully load after autologin
+sleep 10
+
+# Final shutdown
 echo "Shutting down VM..."
 vm_ssh "sudo shutdown -h now" 2>/dev/null || true
 
