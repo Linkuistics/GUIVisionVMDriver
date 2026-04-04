@@ -14,6 +14,11 @@ struct AgentCLI: AsyncParsableCommand {
             SetValueCommand.self,
             FocusElementCommand.self,
             ShowMenuCommand.self,
+            WindowFocusCmd.self,
+            WindowResizeCmd.self,
+            WindowMoveCmd.self,
+            WindowCloseCmd.self,
+            WindowMinimizeCmd.self,
         ]
     )
 }
