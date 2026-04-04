@@ -14,6 +14,7 @@ struct GUIVisionCLI: AsyncParsableCommand {
             SSHCommand.self,
             RecordCommand.self,
             ServerCommand.self,
+            AgentCommand.self,
         ]
     )
 }
