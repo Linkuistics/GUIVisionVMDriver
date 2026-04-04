@@ -288,6 +288,7 @@ install_agent() {
 
     echo "Installing guivision-agent to VM..."
     vm_scp "$_AGENT_BIN" "/tmp/guivision-agent"
+    vm_ssh "sudo mkdir -p /usr/local/bin"
     vm_ssh "sudo mv /tmp/guivision-agent /usr/local/bin/guivision-agent"
     vm_ssh "sudo chmod +x /usr/local/bin/guivision-agent"
 
