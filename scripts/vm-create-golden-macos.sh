@@ -379,9 +379,33 @@ _recovery_boot_csrutil() {
         exit 1
     fi
 
-    # Extract host:port from vnc://host:port
-    local _VNC_ENDPOINT
-    _VNC_ENDPOINT=$(echo "$_VNC_URL" | sed 's|vnc://||')
+    # Extract host:port and optional password from vnc://[:password@]host:port
+    local _VNC_STRIPPED
+    _VNC_STRIPPED=$(echo "$_VNC_URL" | sed 's|vnc://||')
+    local _VNC_HOST_PORT _VNC_PASSWORD=""
+    if [[ "$_VNC_STRIPPED" == *@* ]]; then
+        _VNC_PASSWORD=$(echo "$_VNC_STRIPPED" | sed 's|@.*||; s|^:||')
+        _VNC_HOST_PORT=$(echo "$_VNC_STRIPPED" | sed 's|.*@||')
+    else
+        _VNC_HOST_PORT="$_VNC_STRIPPED"
+    fi
+
+    # Split host and port for the connection spec
+    local _VNC_HOST _VNC_PORT
+    _VNC_HOST=$(echo "$_VNC_HOST_PORT" | cut -d: -f1)
+    _VNC_PORT=$(echo "$_VNC_HOST_PORT" | cut -d: -f2)
+
+    # Write a temp connection spec so guivision can authenticate to VNC
+    local _PW_JSON="null"
+    if [[ -n "$_VNC_PASSWORD" ]]; then
+        _PW_JSON="\"$_VNC_PASSWORD\""
+    fi
+    local _CONNECT_SPEC
+    _CONNECT_SPEC=$(mktemp /tmp/guivision-recovery-spec.XXXXXX.json)
+    cat > "$_CONNECT_SPEC" <<SPECEOF
+{"vnc":{"host":"${_VNC_HOST}","port":${_VNC_PORT},"password":${_PW_JSON}}}
+SPECEOF
+    local _GV="$_GUIVISION_BIN --connect $_CONNECT_SPEC"
 
     # Recovery takes a while to reach the options screen.
     echo -n "Waiting for Recovery environment to load (60s)..."
@@ -389,7 +413,7 @@ _recovery_boot_csrutil() {
     echo " done."
 
     # Take a diagnostic screenshot to verify recovery booted
-    "$_GUIVISION_BIN" screenshot --vnc "$_VNC_ENDPOINT" --output /tmp/guivision-recovery-pre.png 2>/dev/null || true
+    $_GV screenshot --output /tmp/guivision-recovery-pre.png 2>/dev/null || true
     echo "  Recovery screenshot saved to /tmp/guivision-recovery-pre.png"
 
     # Open Terminal in Recovery via the Utilities menu.
@@ -398,34 +422,36 @@ _recovery_boot_csrutil() {
     echo "Opening Terminal in Recovery via menu bar..."
 
     # Focus menu bar with Ctrl+F2 (Fn+Ctrl+F2 on Apple keyboards)
-    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" f2 --modifiers ctrl
+    $_GV input key f2 --modifiers ctrl
     sleep 1
 
     # Navigate to Utilities menu (press right arrow a few times to reach it)
     # Recovery app menu order: Apple (skip), Recovery app, Utilities
-    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" right
+    $_GV input key right
     sleep 0.3
-    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" right
+    $_GV input key right
     sleep 0.3
     # Open the Utilities menu
-    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" return
+    $_GV input key return
     sleep 0.5
     # Terminal is typically the first or second item in Utilities menu
-    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" down
+    $_GV input key down
     sleep 0.3
-    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" return
+    $_GV input key return
     sleep 3
 
     # Terminal should now be open. Type the csrutil command.
     echo "Running '${_CSRUTIL_CMD}' in recovery Terminal..."
-    "$_GUIVISION_BIN" input type --vnc "$_VNC_ENDPOINT" "$_CSRUTIL_CMD"
+    $_GV input type "$_CSRUTIL_CMD"
     sleep 0.5
-    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" return
+    $_GV input key return
     sleep 3
 
     # Take a post-command screenshot for verification
-    "$_GUIVISION_BIN" screenshot --vnc "$_VNC_ENDPOINT" --output /tmp/guivision-recovery-post.png 2>/dev/null || true
+    $_GV screenshot --output /tmp/guivision-recovery-post.png 2>/dev/null || true
     echo "  Post-command screenshot saved to /tmp/guivision-recovery-post.png"
+
+    rm -f "$_CONNECT_SPEC"
 
     echo "Stopping recovery boot..."
     tart stop "$_SETUP_VM" 2>/dev/null || true
