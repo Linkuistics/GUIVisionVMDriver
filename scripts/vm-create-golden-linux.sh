@@ -172,10 +172,10 @@ fi
 echo "Installing Ubuntu Desktop (this takes several minutes)..."
 vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q"
 
-# Disable needrestart — it tries to restart services after each apt
-# install, which is slow and can hang in a headless VM. We reboot at
-# the end anyway, which restarts everything.
-vm_ssh "sudo mkdir -p /etc/needrestart/conf.d && echo '\$nrconf{restart} = '\"'\"'l'\"'\"';' | sudo tee /etc/needrestart/conf.d/no-restart.conf > /dev/null"
+# Remove needrestart — it restarts services like systemd-networkd
+# after apt installs, which can break SSH connectivity mid-script.
+# We do a full reboot at the end which restarts everything.
+vm_ssh "sudo apt-get remove -y needrestart >/dev/null 2>&1 || true"
 
 # Prevent services from auto-starting during install. Without this,
 # packages like gdm3 and gnome-remote-desktop try to start daemons
@@ -240,14 +240,29 @@ show-banners=false
 SCHEMA"
 vm_ssh "sudo glib-compile-schemas /usr/share/glib-2.0/schemas/"
 
-# --- Reboot to apply settings, then shutdown ---
-# GDM autologin and GSettings overrides need a boot cycle to take effect.
-# Re-discover IP after reboot since it may change.
+# --- Reboot cycle to apply settings ---
+# tart run exits when the guest shuts down or reboots, so we:
+# shutdown → restart tart run → wait for GDM autologin → shutdown → clone.
 
-echo -n "Rebooting to apply settings..."
-vm_ssh "sudo reboot" 2>/dev/null || true
+echo "Shutting down VM for reboot cycle..."
+vm_ssh "sudo shutdown -h now" 2>/dev/null || true
 
-sleep 10
+echo -n "Waiting for shutdown..."
+for i in $(seq 1 60); do
+    if ! kill -0 "$_TART_PID" 2>/dev/null; then
+        echo " done."
+        break
+    fi
+    echo -n "."
+    sleep 2
+done
+wait "$_TART_PID" 2>/dev/null || true
+
+echo "Restarting VM to apply settings..."
+tart run "$_SETUP_VM" --no-graphics --vnc-experimental &
+_TART_PID=$!
+
+echo -n "Waiting for SSH..."
 _SSH_BACK=false
 for i in $(seq 1 90); do
     _IP=$(tart ip "$_SETUP_VM" 2>/dev/null | tr -d '[:space:]' || true)
@@ -266,7 +281,7 @@ done
 
 if ! $_SSH_BACK; then
     echo ""
-    echo "ERROR: VM did not come back online after reboot"
+    echo "ERROR: VM did not come back online after restart"
     exit 1
 fi
 
@@ -287,11 +302,7 @@ for i in $(seq 1 60); do
     echo -n "."
     sleep 2
 done
-if kill -0 "$_TART_PID" 2>/dev/null; then
-    echo " forcing stop."
-    tart stop "$_SETUP_VM" 2>/dev/null || true
-    wait "$_TART_PID" 2>/dev/null || true
-fi
+wait "$_TART_PID" 2>/dev/null || true
 
 # --- Clone to golden ---
 
