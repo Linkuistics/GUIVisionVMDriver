@@ -22,6 +22,17 @@ let package = Package(
             path: "Sources/GUIVisionAgentProtocol"
         ),
         .target(
+            name: "GUIVisionAgentLib",
+            dependencies: [
+                "GUIVisionAgentProtocol",
+            ],
+            path: "Sources/GUIVisionAgentLib",
+            linkerSettings: [
+                .linkedFramework("ApplicationServices"),
+                .linkedFramework("CoreGraphics"),
+            ]
+        ),
+        .target(
             name: "GUIVisionVMDriver",
             dependencies: [
                 "GUIVisionAgentProtocol",
@@ -49,14 +60,10 @@ let package = Package(
         .executableTarget(
             name: "guivision-agent",
             dependencies: [
-                "GUIVisionAgentProtocol",
+                "GUIVisionAgentLib",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            path: "Sources/guivision-agent",
-            linkerSettings: [
-                .linkedFramework("ApplicationServices"),
-                .linkedFramework("CoreGraphics"),
-            ]
+            path: "Sources/guivision-agent"
         ),
 
         // MARK: - Unit tests
@@ -78,6 +85,7 @@ let package = Package(
         .testTarget(
             name: "GUIVisionAgentTests",
             dependencies: [
+                "GUIVisionAgentLib",
                 "GUIVisionAgentProtocol",
             ],
             path: "Tests/GUIVisionAgentTests"
