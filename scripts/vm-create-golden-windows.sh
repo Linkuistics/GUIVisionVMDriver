@@ -233,7 +233,7 @@ qemu-system-aarch64 \
     -device "tpm-tis-device,tpmdev=tpm0" \
     -drive "file=$_SETUP_QCOW2,if=none,id=hd0,format=qcow2" \
     -device "nvme,serial=guivision,drive=hd0" \
-    -device "usb-ehci" \
+    -device "qemu-xhci" \
     -drive "file=$_CACHED_ISO,if=none,id=cd0,media=cdrom,readonly=on" \
     -device "usb-storage,drive=cd0,bootindex=0" \
     -device "virtio-net-pci,netdev=net0" \
