@@ -274,7 +274,13 @@ show-banners=false
 SCHEMA"
 vm_ssh "sudo glib-compile-schemas /usr/share/glib-2.0/schemas/"
 
-# Disable Software Updater and upgrade notifications
+# Run all pending updates so the golden image is fully patched
+echo "Running system updates (this may take a few minutes)..."
+vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'"
+echo "  Updates complete."
+
+# Disable Software Updater and upgrade notifications so they
+# don't pop up during tests
 vm_ssh "sudo apt-get remove -y update-notifier 2>/dev/null || true"
 vm_ssh "sudo systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true"
 
