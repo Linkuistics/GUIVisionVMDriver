@@ -206,6 +206,40 @@ vm_ssh "sudo rm -f /usr/sbin/policy-rc.d"
 
 echo "  Ubuntu Desktop installed."
 
+# --- Configure NetworkManager ---
+# The base Cirrus Labs image uses systemd-networkd, but ubuntu-desktop-minimal
+# installs NetworkManager which takes over. Without config, NM won't manage
+# the VM's network interface after reboot, leaving it with no IP address.
+echo "Configuring NetworkManager..."
+vm_ssh "sudo tee /etc/NetworkManager/conf.d/10-manage-all.conf > /dev/null << 'NMCONF'
+[device]
+wifi.scan-rand-mac-address=no
+
+[main]
+plugins=ifupdown,keyfile
+
+[ifupdown]
+managed=true
+NMCONF"
+
+# Tell NM to manage all unmanaged devices via DHCP
+vm_ssh "sudo tee /etc/NetworkManager/system-connections/wired.nmconnection > /dev/null << 'NMCONN'
+[connection]
+id=Wired
+type=ethernet
+autoconnect=true
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+NMCONN"
+vm_ssh "sudo chmod 600 /etc/NetworkManager/system-connections/wired.nmconnection"
+
+# Disable systemd-networkd so it doesn't conflict with NetworkManager
+vm_ssh "sudo systemctl disable systemd-networkd.service 2>/dev/null || true"
+
 # Now install Firefox — snapd can run with systemctl restored
 echo "Installing Firefox (snap)..."
 vm_ssh "sudo apt-mark unhold firefox 2>/dev/null || true"
