@@ -268,13 +268,19 @@ sleep 5
 # --- Agent install and TCC/SIP functions ---
 
 install_agent() {
-    echo "Building guivision-agent..."
+    echo "Building guivision and guivision-agent..."
     local _BIN_PATH
-    _BIN_PATH=$(swift build -c release --product guivision-agent --show-bin-path 2>/dev/null)
-    swift build -c release --product guivision-agent
+    _BIN_PATH=$(swift build -c release --show-bin-path 2>/dev/null)
+    swift build -c release
+
+    _GUIVISION_BIN="$_BIN_PATH/guivision"
     local _AGENT_BIN="$_BIN_PATH/guivision-agent"
     if [[ ! -f "$_AGENT_BIN" ]]; then
         echo "ERROR: guivision-agent binary not found at $_AGENT_BIN"
+        exit 1
+    fi
+    if [[ ! -f "$_GUIVISION_BIN" ]]; then
+        echo "ERROR: guivision binary not found at $_GUIVISION_BIN"
         exit 1
     fi
 
@@ -327,75 +333,113 @@ _wait_for_ssh_ready() {
     exit 1
 }
 
-# Boot into Recovery Mode, disable SIP, then reboot normally.
+# Shared helper: boot into recovery, run a csrutil command via VNC automation,
+# then reboot normally. Uses guivision to drive the recovery Terminal over VNC.
 #
-# TODO: The recovery Terminal automation below uses a placeholder comment.
-# tart boots an AVF VM into macOS Recovery with 'tart run --recovery'.
-# Recovery mode does NOT have SSH — commands must be driven via VNC or a
-# pre-staged LaunchDaemon.  Once the guivision VNC interaction layer is
-# available, replace the TODO block with actual guivision calls:
-#   guivision vnc click "Utilities"
-#   guivision vnc click "Terminal"
-#   guivision vnc type "csrutil disable\n"
-#   guivision vnc type "reboot\n"
-# Until then, the operator must connect via VNC and run 'csrutil disable'
-# manually when this step executes.
-# Validate 'tart run --recovery' flag availability with: tart help run
-recovery_boot_disable_sip() {
-    echo "=== SIP: disabling via Recovery Mode ==="
+# In macOS Recovery:
+#   1. The VM boots to a recovery options screen
+#   2. We use keyboard shortcuts to open Terminal (Cmd+Shift+T or via menu)
+#   3. Type the csrutil command
+#   4. Stop the VM and reboot normally
+#
+# Requires: $_GUIVISION_BIN set by install_agent()
+_recovery_boot_csrutil() {
+    local _CSRUTIL_CMD="$1"
+    local _LABEL="$2"
+
+    echo "=== SIP: ${_LABEL} via Recovery Mode ==="
     _stop_vm_graceful
 
-    echo "Booting into Recovery Mode..."
-    tart run "$_SETUP_VM" --recovery --no-graphics &
+    echo "Booting into Recovery Mode with VNC..."
+    local _VNC_OUTPUT
+    _VNC_OUTPUT=$(mktemp)
+    tart run "$_SETUP_VM" --recovery --no-graphics --vnc-experimental > "$_VNC_OUTPUT" 2>&1 &
     _TART_PID=$!
 
-    # Recovery takes longer to reach a usable state than a normal boot.
-    echo -n "Waiting for Recovery environment (90s)..."
-    sleep 90
+    # Wait for VNC endpoint
+    local _VNC_URL=""
+    echo -n "Waiting for VNC..."
+    for i in $(seq 1 60); do
+        _VNC_URL=$(grep -o 'vnc://[^ ]*' "$_VNC_OUTPUT" 2>/dev/null || true)
+        if [[ -n "$_VNC_URL" ]]; then
+            echo " available ($_VNC_URL)"
+            break
+        fi
+        echo -n "."
+        sleep 1
+    done
+    rm -f "$_VNC_OUTPUT"
+
+    if [[ -z "$_VNC_URL" ]]; then
+        echo ""
+        echo "ERROR: VNC not available for recovery boot"
+        exit 1
+    fi
+
+    # Extract host:port from vnc://host:port
+    local _VNC_ENDPOINT
+    _VNC_ENDPOINT=$(echo "$_VNC_URL" | sed 's|vnc://||')
+
+    # Recovery takes a while to reach the options screen.
+    echo -n "Waiting for Recovery environment to load (60s)..."
+    sleep 60
     echo " done."
 
-    # TODO: automate 'csrutil disable' in the recovery Terminal via VNC/guivision.
-    echo "ACTION REQUIRED: connect via VNC, open Utilities > Terminal, run 'csrutil disable', then reboot."
-    echo "Waiting 60s for manual action (extend sleep if needed)..."
-    sleep 60
+    # Take a diagnostic screenshot to verify recovery booted
+    "$_GUIVISION_BIN" screenshot --vnc "$_VNC_ENDPOINT" --output /tmp/guivision-recovery-pre.png 2>/dev/null || true
+    echo "  Recovery screenshot saved to /tmp/guivision-recovery-pre.png"
+
+    # Open Terminal in Recovery via the Utilities menu.
+    # In macOS Recovery, the menu bar has: Apple, <app>, Utilities, Window, Help
+    # We use Ctrl+F2 to focus the menu bar, then keyboard to navigate.
+    echo "Opening Terminal in Recovery via menu bar..."
+
+    # Focus menu bar with Ctrl+F2 (Fn+Ctrl+F2 on Apple keyboards)
+    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" f2 --modifiers ctrl
+    sleep 1
+
+    # Navigate to Utilities menu (press right arrow a few times to reach it)
+    # Recovery app menu order: Apple (skip), Recovery app, Utilities
+    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" right
+    sleep 0.3
+    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" right
+    sleep 0.3
+    # Open the Utilities menu
+    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" return
+    sleep 0.5
+    # Terminal is typically the first or second item in Utilities menu
+    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" down
+    sleep 0.3
+    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" return
+    sleep 3
+
+    # Terminal should now be open. Type the csrutil command.
+    echo "Running '${_CSRUTIL_CMD}' in recovery Terminal..."
+    "$_GUIVISION_BIN" input type --vnc "$_VNC_ENDPOINT" "$_CSRUTIL_CMD"
+    sleep 0.5
+    "$_GUIVISION_BIN" input key --vnc "$_VNC_ENDPOINT" return
+    sleep 3
+
+    # Take a post-command screenshot for verification
+    "$_GUIVISION_BIN" screenshot --vnc "$_VNC_ENDPOINT" --output /tmp/guivision-recovery-post.png 2>/dev/null || true
+    echo "  Post-command screenshot saved to /tmp/guivision-recovery-post.png"
 
     echo "Stopping recovery boot..."
     tart stop "$_SETUP_VM" 2>/dev/null || true
     wait "$_TART_PID" 2>/dev/null || true
 
-    echo "Rebooting normally after SIP disable..."
+    echo "Rebooting normally after ${_LABEL}..."
     tart run "$_SETUP_VM" --no-graphics &
     _TART_PID=$!
     _wait_for_ssh_ready
 }
 
-# Boot into Recovery Mode, re-enable SIP, then reboot normally.
-# See recovery_boot_disable_sip for automation notes and TODOs.
+recovery_boot_disable_sip() {
+    _recovery_boot_csrutil "csrutil disable" "disabling SIP"
+}
+
 recovery_boot_enable_sip() {
-    echo "=== SIP: re-enabling via Recovery Mode ==="
-    _stop_vm_graceful
-
-    echo "Booting into Recovery Mode..."
-    tart run "$_SETUP_VM" --recovery --no-graphics &
-    _TART_PID=$!
-
-    echo -n "Waiting for Recovery environment (90s)..."
-    sleep 90
-    echo " done."
-
-    # TODO: automate 'csrutil enable' in the recovery Terminal via VNC/guivision.
-    echo "ACTION REQUIRED: connect via VNC, open Utilities > Terminal, run 'csrutil enable', then reboot."
-    echo "Waiting 60s for manual action (extend sleep if needed)..."
-    sleep 60
-
-    echo "Stopping recovery boot..."
-    tart stop "$_SETUP_VM" 2>/dev/null || true
-    wait "$_TART_PID" 2>/dev/null || true
-
-    echo "Rebooting normally after SIP re-enable..."
-    tart run "$_SETUP_VM" --no-graphics &
-    _TART_PID=$!
-    _wait_for_ssh_ready
+    _recovery_boot_csrutil "csrutil enable" "re-enabling SIP"
 }
 
 # Write the guivision-agent accessibility grant directly into the system-level
