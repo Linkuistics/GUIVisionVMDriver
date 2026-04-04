@@ -175,7 +175,7 @@ vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q"
 # Remove needrestart — it restarts services like systemd-networkd
 # after apt installs, which can break SSH connectivity mid-script.
 # We do a full reboot at the end which restarts everything.
-vm_ssh "sudo apt-get remove -y needrestart >/dev/null 2>&1 || true"
+vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y needrestart >/dev/null 2>&1 || true"
 
 # Prevent services from auto-starting during install. Without this,
 # packages like gdm3 and gnome-remote-desktop try to start daemons
