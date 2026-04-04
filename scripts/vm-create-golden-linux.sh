@@ -180,12 +180,18 @@ vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q"
 vm_ssh "echo -e '#!/bin/sh\nexit 101' | sudo tee /usr/sbin/policy-rc.d > /dev/null && sudo chmod +x /usr/sbin/policy-rc.d"
 vm_ssh "sudo dpkg-divert --local --rename --add /usr/bin/systemctl && sudo ln -sf /bin/true /usr/bin/systemctl"
 
-# Hold firefox during the main install — it's a snap package that
-# requires snapd to be running, which our systemctl divert prevents.
-# We install it after restoring systemctl (see below).
-vm_ssh "sudo apt-mark hold firefox 2>/dev/null || true"
+# Pin firefox to never install during this apt run — it's a snap
+# package that requires snapd, which can't start with systemctl diverted.
+# apt-mark hold doesn't work here because apt already resolved the
+# dependency before the hold takes effect. An apt pin of -1 prevents
+# apt from selecting the package entirely.
+# We install firefox after restoring systemctl (see below).
+vm_ssh "printf 'Package: firefox\nPin: release *\nPin-Priority: -1\n' | sudo tee /etc/apt/preferences.d/no-firefox > /dev/null"
 
 vm_ssh "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' ubuntu-desktop-minimal"
+
+# Remove the firefox pin
+vm_ssh "sudo rm -f /etc/apt/preferences.d/no-firefox"
 
 # Restore systemctl and policy-rc.d so services start normally on boot
 vm_ssh "sudo rm -f /usr/bin/systemctl && sudo dpkg-divert --local --rename --remove /usr/bin/systemctl"
