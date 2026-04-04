@@ -134,6 +134,7 @@ cleanup() {
         wait "$_SWTPM_PID" 2>/dev/null || true
     fi
     rm -f "$_ASKPASS_FILE" 2>/dev/null || true
+    rm -f "$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock" 2>/dev/null || true
     # Clean up setup files only if golden was not finalized
     if ! $_GOLDEN_DONE; then
         rm -f "$_SETUP_QCOW2" 2>/dev/null || true
@@ -236,7 +237,8 @@ qemu-system-aarch64 \
     -boot d \
     -device "virtio-net-pci,netdev=net0" \
     -netdev "user,id=net0,hostfwd=tcp::${_SSH_PORT}-:22" \
-    -vnc ":${_VNC_DISPLAY}" \
+    -vnc ":${_VNC_DISPLAY},password=on" \
+    -monitor "unix:$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock,server,nowait" \
     -display none &
 _QEMU_PID=$!
 
@@ -247,6 +249,21 @@ if ! kill -0 "$_QEMU_PID" 2>/dev/null; then
 fi
 echo "  QEMU running (PID: $_QEMU_PID)"
 
+# Set VNC password via QEMU monitor (macOS Screen Sharing requires one)
+_VNC_PASS="admin"
+_MONITOR_SOCK="$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock"
+python3 -c "
+import socket, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect('$_MONITOR_SOCK')
+time.sleep(0.5)
+s.recv(4096)  # read prompt
+s.sendall(b'set_password vnc $_VNC_PASS\n')
+time.sleep(0.5)
+s.recv(4096)
+s.close()
+" 2>/dev/null || echo "WARNING: Could not set VNC password"
+
 # --- Manual Windows installation via VNC ---
 
 echo ""
@@ -254,7 +271,8 @@ echo "=========================================================="
 echo "  MANUAL STEP: Complete the Windows installation via VNC"
 echo "=========================================================="
 echo ""
-echo "  Connect with:  open vnc://localhost:590${_VNC_DISPLAY}"
+echo "  Connect with:  open vnc://localhost:590${_VNC_DISPLAY}
+  VNC password:  $_VNC_PASS"
 echo ""
 echo "  During the OOBE, create a LOCAL account:"
 echo "    Username: admin"
