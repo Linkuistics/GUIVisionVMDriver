@@ -129,6 +129,9 @@ mkdir -p "$_GOLDEN_DIR" "$_CACHE_DIR"
 # --- Cleanup on exit ---
 
 cleanup() {
+    if [[ -n "${_KEYPRESS_PID:-}" ]] && kill -0 "$_KEYPRESS_PID" 2>/dev/null; then
+        kill "$_KEYPRESS_PID" 2>/dev/null || true
+    fi
     if [[ -n "${_QEMU_PID:-}" ]] && kill -0 "$_QEMU_PID" 2>/dev/null; then
         echo "Cleaning up: stopping QEMU..."
         kill "$_QEMU_PID" 2>/dev/null || true
@@ -273,6 +276,18 @@ _MONITOR_SOCK="$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock"
 # Talk to the QEMU monitor socket using bash /dev/tcp redirection isn't
 # available for Unix sockets, so use nc (netcat) which ships with macOS.
 (echo "set_password vnc $_VNC_PASS"; sleep 0.5) | nc -U "$_MONITOR_SOCK" >/dev/null 2>&1 || echo "WARNING: Could not set VNC password"
+
+# Send periodic keypresses in the background to dismiss the
+# "Press any key to boot from CD..." prompt. The prompt appears
+# ~5-15s after UEFI hands off to the Windows boot loader.
+(
+    sleep 8
+    for i in $(seq 1 24); do
+        (echo "sendkey ret"; sleep 0.3) | nc -U "$_MONITOR_SOCK" 2>/dev/null
+        sleep 5
+    done
+) &
+_KEYPRESS_PID=$!
 
 # --- Manual Windows installation via VNC ---
 
