@@ -256,6 +256,7 @@ qemu-system-aarch64 \
     -device "usb-storage,drive=cd0,bootindex=0" \
     -drive "file=$_STARTUP_IMG,if=none,id=startup,format=raw,readonly=on" \
     -device "usb-storage,drive=startup,bootindex=1" \
+    -device "usb-kbd" \
     -device "virtio-net-pci,netdev=net0" \
     -netdev "user,id=net0,hostfwd=tcp::${_SSH_PORT}-:22" \
     -vnc ":${_VNC_DISPLAY},password=on" \
@@ -275,18 +276,18 @@ _VNC_PASS="admin"
 _MONITOR_SOCK="$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock"
 # Talk to the QEMU monitor socket using bash /dev/tcp redirection isn't
 # available for Unix sockets, so use nc (netcat) which ships with macOS.
-(echo "set_password vnc $_VNC_PASS"; sleep 0.5) | nc -U "$_MONITOR_SOCK" >/dev/null 2>&1 || echo "WARNING: Could not set VNC password"
-
-# Send periodic keypresses in the background to dismiss the
-# "Press any key to boot from CD..." prompt. The prompt appears
-# ~5-15s after UEFI hands off to the Windows boot loader.
+# Use a single persistent monitor connection for all commands.
+# Sends VNC password, then periodic keypresses to dismiss
+# "Press any key to boot from CD..." prompt.
 (
-    sleep 8
-    for i in $(seq 1 24); do
-        (echo "sendkey ret"; sleep 0.3) | nc -U "$_MONITOR_SOCK" 2>/dev/null
-        sleep 5
+    sleep 1
+    echo "set_password vnc $_VNC_PASS"
+    # Send keypresses every 3s for 2 minutes to catch the boot prompt
+    for i in $(seq 1 40); do
+        sleep 3
+        echo "sendkey ret"
     done
-) &
+) | nc -U "$_MONITOR_SOCK" >/dev/null 2>&1 &
 _KEYPRESS_PID=$!
 
 # --- Manual Windows installation via VNC ---
