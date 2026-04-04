@@ -500,6 +500,15 @@ grant_accessibility_permission() {
 
 # --- Run agent installation and TCC/SIP cycle ---
 
+# The logout cycle can sometimes cause the tart process to exit.
+# Ensure the VM is running before proceeding.
+if ! kill -0 "$_TART_PID" 2>/dev/null; then
+    echo "VM process exited during logout cycle. Restarting..."
+    tart run "$_SETUP_VM" --no-graphics &
+    _TART_PID=$!
+    _wait_for_ssh_ready
+fi
+
 install_agent
 recovery_boot_disable_sip
 grant_accessibility_permission
