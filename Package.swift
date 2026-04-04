@@ -71,6 +71,7 @@ let package = Package(
             name: "GUIVisionVMDriverTests",
             dependencies: [
                 "GUIVisionVMDriver",
+                "GUIVisionAgentProtocol",
                 .product(name: "RoyalVNCKit", package: "royalvnc"),
             ],
             path: "Tests/GUIVisionVMDriverTests"
