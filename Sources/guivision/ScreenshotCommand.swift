@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import GUIVisionVMDriver
+import GUIVisionAgentProtocol
 
 struct ScreenshotCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -16,6 +17,9 @@ struct ScreenshotCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Crop region as x,y,width,height")
     var region: String?
 
+    @Option(name: .long, help: "Window name for relative coordinates (crops to window bounds when no --region specified)")
+    var window: String?
+
     mutating func run() async throws {
         let spec = try connection.resolve()
 
@@ -24,6 +28,12 @@ struct ScreenshotCommand: AsyncParsableCommand {
         let cropRegion: CGRect?
         if let regionStr = region {
             cropRegion = try parseRegion(regionStr)
+        } else if let windowFilter = window {
+            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            cropRegion = CGRect(
+                x: win.position.x, y: win.position.y,
+                width: win.size.width, height: win.size.height
+            )
         } else {
             cropRegion = nil
         }

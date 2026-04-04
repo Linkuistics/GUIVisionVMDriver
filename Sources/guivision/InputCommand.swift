@@ -1,5 +1,30 @@
 import ArgumentParser
+import Foundation
 import GUIVisionVMDriver
+import GUIVisionAgentProtocol
+
+// MARK: - Window Resolution Helper
+
+/// Resolves the WindowInfo for the given filter string via SSH/AgentClient.
+/// Throws ValidationError if SSH is not configured or the window is not found.
+func resolveWindow(spec: ConnectionSpec, windowFilter: String) throws -> WindowInfo {
+    guard spec.ssh != nil else {
+        throw ValidationError("--window requires SSH to be configured (use --ssh or a connection spec with SSH)")
+    }
+    let sshClient = try SSHClient(connectionSpec: spec)
+    let agent = AgentClient(sshClient: sshClient)
+    let data = try agent.windows()
+    let response = try AgentClient.parseResponse(SnapshotResponse.self, from: data)
+    guard let window = response.windows.first(where: { win in
+        (win.title?.localizedCaseInsensitiveContains(windowFilter) ?? false) ||
+        win.appName.localizedCaseInsensitiveContains(windowFilter)
+    }) else {
+        throw ValidationError("No window matching '\(windowFilter)'")
+    }
+    return window
+}
+
+// MARK: - Input Command
 
 struct InputCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -109,12 +134,22 @@ struct ClickCommand: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Click count")
     var count: Int = 1
 
+    @Option(name: .long, help: "Window name for relative coordinates")
+    var window: String?
+
     mutating func run() async throws {
         let spec = try connection.resolve()
         let client = try await ServerClient.ensure(spec: spec)
 
-        try await client.click(x: x, y: y, button: button, count: count)
-        print("Clicked at (\(x), \(y)) button=\(button) count=\(count)")
+        var offsetX = 0, offsetY = 0
+        if let windowFilter = window {
+            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            offsetX = Int(win.position.x)
+            offsetY = Int(win.position.y)
+        }
+
+        try await client.click(x: x + offsetX, y: y + offsetY, button: button, count: count)
+        print("Clicked at (\(x + offsetX), \(y + offsetY)) button=\(button) count=\(count)")
     }
 }
 
@@ -132,12 +167,22 @@ struct MouseDownCommand: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Mouse button (left, right, middle)")
     var button: String = "left"
 
+    @Option(name: .long, help: "Window name for relative coordinates")
+    var window: String?
+
     mutating func run() async throws {
         let spec = try connection.resolve()
         let client = try await ServerClient.ensure(spec: spec)
 
-        try await client.mouseDown(x: x, y: y, button: button)
-        print("Mouse down at (\(x), \(y)) button=\(button)")
+        var offsetX = 0, offsetY = 0
+        if let windowFilter = window {
+            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            offsetX = Int(win.position.x)
+            offsetY = Int(win.position.y)
+        }
+
+        try await client.mouseDown(x: x + offsetX, y: y + offsetY, button: button)
+        print("Mouse down at (\(x + offsetX), \(y + offsetY)) button=\(button)")
     }
 }
 
@@ -155,12 +200,22 @@ struct MouseUpCommand: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Mouse button (left, right, middle)")
     var button: String = "left"
 
+    @Option(name: .long, help: "Window name for relative coordinates")
+    var window: String?
+
     mutating func run() async throws {
         let spec = try connection.resolve()
         let client = try await ServerClient.ensure(spec: spec)
 
-        try await client.mouseUp(x: x, y: y, button: button)
-        print("Mouse up at (\(x), \(y)) button=\(button)")
+        var offsetX = 0, offsetY = 0
+        if let windowFilter = window {
+            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            offsetX = Int(win.position.x)
+            offsetY = Int(win.position.y)
+        }
+
+        try await client.mouseUp(x: x + offsetX, y: y + offsetY, button: button)
+        print("Mouse up at (\(x + offsetX), \(y + offsetY)) button=\(button)")
     }
 }
 
@@ -175,12 +230,22 @@ struct MoveCommand: AsyncParsableCommand {
     @Argument(help: "Y coordinate")
     var y: Int
 
+    @Option(name: .long, help: "Window name for relative coordinates")
+    var window: String?
+
     mutating func run() async throws {
         let spec = try connection.resolve()
         let client = try await ServerClient.ensure(spec: spec)
 
-        try await client.mouseMove(x: x, y: y)
-        print("Mouse moved to (\(x), \(y))")
+        var offsetX = 0, offsetY = 0
+        if let windowFilter = window {
+            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            offsetX = Int(win.position.x)
+            offsetY = Int(win.position.y)
+        }
+
+        try await client.mouseMove(x: x + offsetX, y: y + offsetY)
+        print("Mouse moved to (\(x + offsetX), \(y + offsetY))")
     }
 }
 
@@ -201,12 +266,22 @@ struct ScrollCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Vertical scroll amount (negative=up)")
     var dy: Int = 0
 
+    @Option(name: .long, help: "Window name for relative coordinates")
+    var window: String?
+
     mutating func run() async throws {
         let spec = try connection.resolve()
         let client = try await ServerClient.ensure(spec: spec)
 
-        try await client.scroll(x: x, y: y, dx: dx, dy: dy)
-        print("Scrolled at (\(x), \(y)) dx=\(dx) dy=\(dy)")
+        var offsetX = 0, offsetY = 0
+        if let windowFilter = window {
+            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            offsetX = Int(win.position.x)
+            offsetY = Int(win.position.y)
+        }
+
+        try await client.scroll(x: x + offsetX, y: y + offsetY, dx: dx, dy: dy)
+        print("Scrolled at (\(x + offsetX), \(y + offsetY)) dx=\(dx) dy=\(dy)")
     }
 }
 
@@ -233,11 +308,25 @@ struct DragCommand: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Number of interpolation steps")
     var steps: Int = 10
 
+    @Option(name: .long, help: "Window name for relative coordinates")
+    var window: String?
+
     mutating func run() async throws {
         let spec = try connection.resolve()
         let client = try await ServerClient.ensure(spec: spec)
 
-        try await client.drag(fromX: fromX, fromY: fromY, toX: toX, toY: toY, button: button, steps: steps)
-        print("Dragged from (\(fromX),\(fromY)) to (\(toX),\(toY))")
+        var offsetX = 0, offsetY = 0
+        if let windowFilter = window {
+            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            offsetX = Int(win.position.x)
+            offsetY = Int(win.position.y)
+        }
+
+        try await client.drag(
+            fromX: fromX + offsetX, fromY: fromY + offsetY,
+            toX: toX + offsetX, toY: toY + offsetY,
+            button: button, steps: steps
+        )
+        print("Dragged from (\(fromX + offsetX),\(fromY + offsetY)) to (\(toX + offsetX),\(toY + offsetY))")
     }
 }
