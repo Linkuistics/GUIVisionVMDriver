@@ -8,6 +8,8 @@ struct AgentCLI: AsyncParsableCommand {
         abstract: "In-VM accessibility agent for GUI automation",
         subcommands: [
             HealthCommand.self,
+            WindowsCommand.self,
+            SnapshotCommand.self,
         ]
     )
 }
