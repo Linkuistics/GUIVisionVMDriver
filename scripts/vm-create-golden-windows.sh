@@ -282,9 +282,9 @@ _MONITOR_SOCK="$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock"
 (
     sleep 1
     echo "set_password vnc $_VNC_PASS"
-    # Send keypresses every 2s for 20s to catch the boot prompt
-    for i in $(seq 1 10); do
-        sleep 2
+    # Send keypresses every 1s for 20s to catch the boot prompt
+    for i in $(seq 1 20); do
+        sleep 1
         echo "sendkey ret"
     done
 ) | nc -U "$_MONITOR_SOCK" >/dev/null 2>&1 &
