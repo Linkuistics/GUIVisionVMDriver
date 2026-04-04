@@ -240,35 +240,14 @@ show-banners=false
 SCHEMA"
 vm_ssh "sudo glib-compile-schemas /usr/share/glib-2.0/schemas/"
 
-# --- Shutdown, reboot, and shutdown again ---
-# tart run exits when the guest reboots, so we can't do an in-place
-# reboot. Instead: shutdown → restart tart → wait for GDM autologin
-# and settings to apply → shutdown again → clone.
+# --- Reboot to apply settings, then shutdown ---
+# GDM autologin and GSettings overrides need a boot cycle to take effect.
+# Re-discover IP after reboot since it may change.
 
-echo "Shutting down VM for reboot cycle..."
-vm_ssh "sudo shutdown -h now" 2>/dev/null || true
+echo -n "Rebooting to apply settings..."
+vm_ssh "sudo reboot" 2>/dev/null || true
 
-echo -n "Waiting for shutdown..."
-for i in $(seq 1 60); do
-    if ! kill -0 "$_TART_PID" 2>/dev/null; then
-        echo " done."
-        break
-    fi
-    echo -n "."
-    sleep 2
-done
-if kill -0 "$_TART_PID" 2>/dev/null; then
-    echo " forcing stop."
-    tart stop "$_SETUP_VM" 2>/dev/null || true
-    wait "$_TART_PID" 2>/dev/null || true
-fi
-
-# Restart VM so GDM autologin and desktop settings take effect
-echo "Restarting VM to apply settings..."
-tart run "$_SETUP_VM" --no-graphics --vnc-experimental &
-_TART_PID=$!
-
-echo -n "Waiting for SSH..."
+sleep 10
 _SSH_BACK=false
 for i in $(seq 1 90); do
     _IP=$(tart ip "$_SETUP_VM" 2>/dev/null | tr -d '[:space:]' || true)
@@ -287,14 +266,15 @@ done
 
 if ! $_SSH_BACK; then
     echo ""
-    echo "ERROR: VM did not come back online after restart"
+    echo "ERROR: VM did not come back online after reboot"
     exit 1
 fi
 
 # Give the desktop a moment to fully load after autologin
 sleep 10
 
-# Final shutdown
+# --- Shutdown ---
+
 echo "Shutting down VM..."
 vm_ssh "sudo shutdown -h now" 2>/dev/null || true
 
