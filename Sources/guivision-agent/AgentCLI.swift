@@ -22,6 +22,8 @@ struct AgentCLI: AsyncParsableCommand {
             ScreenshotWindowCmd.self,
             ScreenshotRegionCmd.self,
             ScreenshotElementCmd.self,
+            InspectCommand.self,
+            WaitCommand.self,
         ]
     )
 }
