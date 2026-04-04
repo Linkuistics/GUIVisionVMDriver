@@ -199,14 +199,66 @@ truncate -s 64M "$_SETUP_EFIVARS"
 
 # Create a small FAT image with startup.nsh so the UEFI shell
 # auto-boots from the Windows ISO instead of dropping to a prompt.
+# Uses python3 to write the file into a FAT12 image without mounting.
 _STARTUP_IMG="$_CACHE_DIR/${_SETUP_PREFIX}-startup.img"
-truncate -s 1M "$_STARTUP_IMG"
-/usr/sbin/newfs_msdos -F 12 "$_STARTUP_IMG" >/dev/null 2>&1
-_STARTUP_MNT=$(mktemp -d)
-hdiutil attach -mountpoint "$_STARTUP_MNT" "$_STARTUP_IMG" -nobrowse >/dev/null 2>&1
-echo 'FS0:\EFI\Boot\bootaa64.efi' > "$_STARTUP_MNT/startup.nsh"
-hdiutil detach "$_STARTUP_MNT" >/dev/null 2>&1
-rmdir "$_STARTUP_MNT"
+dd if=/dev/zero of="$_STARTUP_IMG" bs=1M count=1 2>/dev/null
+/sbin/newfs_msdos -F 12 "$_STARTUP_IMG" >/dev/null
+python3 -c "
+import subprocess, struct
+
+# Read the FAT12 image
+with open('$_STARTUP_IMG', 'r+b') as f:
+    # Read boot sector to find key parameters
+    f.seek(0)
+    bs = f.read(512)
+    bytes_per_sector = struct.unpack_from('<H', bs, 11)[0]
+    sectors_per_cluster = bs[13]
+    reserved_sectors = struct.unpack_from('<H', bs, 14)[0]
+    num_fats = bs[16]
+    root_entry_count = struct.unpack_from('<H', bs, 17)[0]
+    sectors_per_fat = struct.unpack_from('<H', bs, 22)[0]
+
+    # Calculate root directory offset
+    root_dir_offset = (reserved_sectors + num_fats * sectors_per_fat) * bytes_per_sector
+    # Calculate data region offset
+    data_offset = root_dir_offset + root_entry_count * 32
+
+    # File content
+    content = b'FS0:\\\EFI\\\Boot\\\bootaa64.efi\r\n'
+
+    # Write file data to first cluster (cluster 2)
+    f.seek(data_offset)
+    f.write(content)
+
+    # Create directory entry for STARTUP.NSH
+    # 8.3 name: 'STARTUP NSH'
+    entry = bytearray(32)
+    entry[0:11] = b'STARTUP NSH'
+    entry[11] = 0x20  # ATTR_ARCHIVE
+    # First cluster = 2
+    struct.pack_into('<H', entry, 26, 2)
+    # File size
+    struct.pack_into('<I', entry, 28, len(content))
+
+    # Write directory entry
+    f.seek(root_dir_offset)
+    f.write(bytes(entry))
+
+    # Mark cluster 2 as end-of-chain in FAT
+    # FAT12: each entry is 12 bits. Cluster 0,1 are reserved.
+    fat_offset = reserved_sectors * bytes_per_sector
+    f.seek(fat_offset)
+    fat_data = bytearray(f.read(sectors_per_fat * bytes_per_sector))
+    # Clusters 0,1 already set by newfs. Set cluster 2 = 0xFFF (end of chain)
+    # Cluster 2 in FAT12: byte offset = 2*3/2 = 3, even cluster
+    fat_data[3] = (fat_data[3] & 0xF0) | 0x0F
+    fat_data[4] = 0xFF
+    f.seek(fat_offset)
+    f.write(bytes(fat_data))
+    # Write to second FAT copy too
+    f.seek(fat_offset + sectors_per_fat * bytes_per_sector)
+    f.write(bytes(fat_data))
+"
 
 # Create TPM state directory and start swtpm
 mkdir -p "$_SETUP_TPM_DIR"
