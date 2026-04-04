@@ -10,6 +10,10 @@ struct AgentCLI: AsyncParsableCommand {
             HealthCommand.self,
             WindowsCommand.self,
             SnapshotCommand.self,
+            PressCommand.self,
+            SetValueCommand.self,
+            FocusElementCommand.self,
+            ShowMenuCommand.self,
         ]
     )
 }
