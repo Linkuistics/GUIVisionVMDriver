@@ -269,9 +269,11 @@ sleep 5
 
 install_agent() {
     echo "Building guivision and guivision-agent..."
+    local _PROJECT_ROOT
+    _PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
     local _BIN_PATH
-    _BIN_PATH=$(swift build -c release --show-bin-path 2>/dev/null)
-    swift build -c release
+    _BIN_PATH=$(swift build --package-path "$_PROJECT_ROOT" -c release --show-bin-path 2>/dev/null)
+    swift build --package-path "$_PROJECT_ROOT" -c release
 
     _GUIVISION_BIN="$_BIN_PATH/guivision"
     local _AGENT_BIN="$_BIN_PATH/guivision-agent"
