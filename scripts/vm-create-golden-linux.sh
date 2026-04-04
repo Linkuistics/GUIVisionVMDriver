@@ -100,7 +100,9 @@ tart clone "$_VANILLA" "$_SETUP_VM"
 # --- Boot the setup VM ---
 
 echo "Booting setup VM..."
-tart run "$_SETUP_VM" --no-graphics &
+# Use --vnc-experimental so GDM has a virtual display after reboot.
+# Without it, GDM crash-loops trying to start a graphical session.
+tart run "$_SETUP_VM" --no-graphics --vnc-experimental &
 _TART_PID=$!
 
 # --- Set up SSH_ASKPASS for password auth to vanilla image ---
@@ -244,20 +246,26 @@ vm_ssh "sudo glib-compile-schemas /usr/share/glib-2.0/schemas/"
 echo -n "Rebooting to apply settings..."
 vm_ssh "sudo reboot" 2>/dev/null || true
 
-# Wait for SSH to drop (reboot) then come back (autologin)
+# Wait for SSH to drop (reboot) then come back (autologin).
+# Re-discover IP since it may change after reboot.
 sleep 10
+_SSH_BACK=false
 for i in $(seq 1 60); do
-    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-           -o LogLevel=ERROR -o ConnectTimeout=5 \
-           "$_VANILLA_USER@$_IP" "true" &>/dev/null; then
-        echo " back online."
-        break
+    _IP=$(tart ip "$_SETUP_VM" 2>/dev/null | tr -d '[:space:]' || true)
+    if [[ -n "$_IP" ]]; then
+        if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+               -o LogLevel=ERROR -o ConnectTimeout=5 \
+               "$_VANILLA_USER@$_IP" "true" &>/dev/null; then
+            _SSH_BACK=true
+            echo " back online (IP: $_IP)."
+            break
+        fi
     fi
     echo -n "."
     sleep 3
 done
 
-if ! ssh $_SSH_OPTS "$_VANILLA_USER@$_IP" "true" &>/dev/null; then
+if ! $_SSH_BACK; then
     echo ""
     echo "ERROR: VM did not come back online after reboot"
     exit 1
