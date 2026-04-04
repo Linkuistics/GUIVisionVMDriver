@@ -274,6 +274,10 @@ show-banners=false
 SCHEMA"
 vm_ssh "sudo glib-compile-schemas /usr/share/glib-2.0/schemas/"
 
+# Disable Software Updater and upgrade notifications
+vm_ssh "sudo apt-get remove -y update-notifier 2>/dev/null || true"
+vm_ssh "sudo systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true"
+
 # --- Reboot cycle to apply settings ---
 # tart run exits when the guest shuts down or reboots, so we:
 # shutdown → restart tart run → wait for GDM autologin → shutdown → clone.
