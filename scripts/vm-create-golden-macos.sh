@@ -265,6 +265,179 @@ done
 # Give the desktop a moment to fully load after login
 sleep 5
 
+# --- Agent install and TCC/SIP functions ---
+
+install_agent() {
+    echo "Building guivision-agent..."
+    local _BIN_PATH
+    _BIN_PATH=$(swift build -c release --product guivision-agent --show-bin-path 2>/dev/null)
+    swift build -c release --product guivision-agent
+    local _AGENT_BIN="$_BIN_PATH/guivision-agent"
+    if [[ ! -f "$_AGENT_BIN" ]]; then
+        echo "ERROR: guivision-agent binary not found at $_AGENT_BIN"
+        exit 1
+    fi
+
+    echo "Installing guivision-agent to VM..."
+    vm_scp "$_AGENT_BIN" "/tmp/guivision-agent"
+    vm_ssh "sudo mv /tmp/guivision-agent /usr/local/bin/guivision-agent"
+    vm_ssh "sudo chmod +x /usr/local/bin/guivision-agent"
+
+    echo "Verifying guivision-agent install..."
+    if vm_ssh "/usr/local/bin/guivision-agent health" &>/dev/null; then
+        echo "  guivision-agent installed and healthy."
+    else
+        echo "  WARNING: guivision-agent health check failed — binary may need runtime dependencies"
+    fi
+}
+
+# Shared helper: gracefully stop the VM and wait for the tart process to exit.
+_stop_vm_graceful() {
+    echo -n "Shutting down VM..."
+    vm_ssh "sudo shutdown -h now" 2>/dev/null || true
+    for i in $(seq 1 60); do
+        if ! kill -0 "$_TART_PID" 2>/dev/null; then
+            echo " done."
+            return 0
+        fi
+        echo -n "."
+        sleep 2
+    done
+    echo " forcing stop."
+    tart stop "$_SETUP_VM" 2>/dev/null || true
+    wait "$_TART_PID" 2>/dev/null || true
+}
+
+# Shared helper: wait for SSH to become available after a reboot.
+_wait_for_ssh_ready() {
+    echo -n "Waiting for SSH..."
+    for i in $(seq 1 60); do
+        _IP=$(tart ip "$_SETUP_VM" 2>/dev/null | tr -d '[:space:]' || true)
+        if [[ -n "$_IP" ]]; then
+            if ssh $_SSH_OPTS "$_VANILLA_USER@$_IP" "true" 2>/dev/null; then
+                echo " ready (IP: $_IP)"
+                return 0
+            fi
+        fi
+        echo -n "."
+        sleep 3
+    done
+    echo ""
+    echo "ERROR: SSH not reachable within 180s after reboot"
+    exit 1
+}
+
+# Boot into Recovery Mode, disable SIP, then reboot normally.
+#
+# TODO: The recovery Terminal automation below uses a placeholder comment.
+# tart boots an AVF VM into macOS Recovery with 'tart run --recovery'.
+# Recovery mode does NOT have SSH — commands must be driven via VNC or a
+# pre-staged LaunchDaemon.  Once the guivision VNC interaction layer is
+# available, replace the TODO block with actual guivision calls:
+#   guivision vnc click "Utilities"
+#   guivision vnc click "Terminal"
+#   guivision vnc type "csrutil disable\n"
+#   guivision vnc type "reboot\n"
+# Until then, the operator must connect via VNC and run 'csrutil disable'
+# manually when this step executes.
+# Validate 'tart run --recovery' flag availability with: tart help run
+recovery_boot_disable_sip() {
+    echo "=== SIP: disabling via Recovery Mode ==="
+    _stop_vm_graceful
+
+    echo "Booting into Recovery Mode..."
+    tart run "$_SETUP_VM" --recovery --no-graphics &
+    _TART_PID=$!
+
+    # Recovery takes longer to reach a usable state than a normal boot.
+    echo -n "Waiting for Recovery environment (90s)..."
+    sleep 90
+    echo " done."
+
+    # TODO: automate 'csrutil disable' in the recovery Terminal via VNC/guivision.
+    echo "ACTION REQUIRED: connect via VNC, open Utilities > Terminal, run 'csrutil disable', then reboot."
+    echo "Waiting 60s for manual action (extend sleep if needed)..."
+    sleep 60
+
+    echo "Stopping recovery boot..."
+    tart stop "$_SETUP_VM" 2>/dev/null || true
+    wait "$_TART_PID" 2>/dev/null || true
+
+    echo "Rebooting normally after SIP disable..."
+    tart run "$_SETUP_VM" --no-graphics &
+    _TART_PID=$!
+    _wait_for_ssh_ready
+}
+
+# Boot into Recovery Mode, re-enable SIP, then reboot normally.
+# See recovery_boot_disable_sip for automation notes and TODOs.
+recovery_boot_enable_sip() {
+    echo "=== SIP: re-enabling via Recovery Mode ==="
+    _stop_vm_graceful
+
+    echo "Booting into Recovery Mode..."
+    tart run "$_SETUP_VM" --recovery --no-graphics &
+    _TART_PID=$!
+
+    echo -n "Waiting for Recovery environment (90s)..."
+    sleep 90
+    echo " done."
+
+    # TODO: automate 'csrutil enable' in the recovery Terminal via VNC/guivision.
+    echo "ACTION REQUIRED: connect via VNC, open Utilities > Terminal, run 'csrutil enable', then reboot."
+    echo "Waiting 60s for manual action (extend sleep if needed)..."
+    sleep 60
+
+    echo "Stopping recovery boot..."
+    tart stop "$_SETUP_VM" 2>/dev/null || true
+    wait "$_TART_PID" 2>/dev/null || true
+
+    echo "Rebooting normally after SIP re-enable..."
+    tart run "$_SETUP_VM" --no-graphics &
+    _TART_PID=$!
+    _wait_for_ssh_ready
+}
+
+# Write the guivision-agent accessibility grant directly into the system-level
+# TCC database.  SIP MUST be disabled before this sqlite3 write will succeed —
+# call this function between recovery_boot_disable_sip and recovery_boot_enable_sip.
+grant_accessibility_permission() {
+    echo "Granting accessibility permission to guivision-agent..."
+
+    vm_ssh "sudo sqlite3 \"/Library/Application Support/com.apple.TCC/TCC.db\" \
+        \"INSERT OR REPLACE INTO access \
+          (service, client, client_type, auth_value, auth_reason, auth_version, \
+           indirect_object_identifier_type, indirect_object_identifier, flags, last_modified) \
+        VALUES \
+          ('kTCCServiceAccessibility', '/usr/local/bin/guivision-agent', 1, 2, 0, 1, \
+           0, 'UNUSED', 0, strftime('%s','now'));\""
+
+    local _RESULT
+    _RESULT=$(vm_ssh "sudo sqlite3 \"/Library/Application Support/com.apple.TCC/TCC.db\" \
+        \"SELECT client FROM access WHERE service='kTCCServiceAccessibility' \
+          AND client='/usr/local/bin/guivision-agent';\"" 2>/dev/null || true)
+    if echo "$_RESULT" | grep -q "guivision-agent"; then
+        echo "  Accessibility permission granted."
+    else
+        echo "  ERROR: TCC insert verification failed — SIP may still be enabled or sqlite3 unavailable"
+        exit 1
+    fi
+}
+
+# --- Run agent installation and TCC/SIP cycle ---
+
+install_agent
+recovery_boot_disable_sip
+grant_accessibility_permission
+recovery_boot_enable_sip
+
+echo "Final agent health check..."
+if vm_ssh "/usr/local/bin/guivision-agent health" &>/dev/null; then
+    echo "  guivision-agent healthy."
+else
+    echo "  WARNING: guivision-agent health check failed after TCC/SIP cycle"
+fi
+
 # --- Shutdown ---
 
 echo "Shutting down VM..."
