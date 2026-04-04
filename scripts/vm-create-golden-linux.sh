@@ -240,39 +240,10 @@ show-banners=false
 SCHEMA"
 vm_ssh "sudo glib-compile-schemas /usr/share/glib-2.0/schemas/"
 
-# --- Reboot to apply all changes ---
-# A reboot is required for GDM autologin and desktop settings to take full effect.
-
-echo -n "Rebooting to apply settings..."
-vm_ssh "sudo reboot" 2>/dev/null || true
-
-# Wait for SSH to drop (reboot) then come back (autologin).
-# Re-discover IP since it may change after reboot.
-sleep 10
-_SSH_BACK=false
-for i in $(seq 1 60); do
-    _IP=$(tart ip "$_SETUP_VM" 2>/dev/null | tr -d '[:space:]' || true)
-    if [[ -n "$_IP" ]]; then
-        if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-               -o LogLevel=ERROR -o ConnectTimeout=5 \
-               "$_VANILLA_USER@$_IP" "true" &>/dev/null; then
-            _SSH_BACK=true
-            echo " back online (IP: $_IP)."
-            break
-        fi
-    fi
-    echo -n "."
-    sleep 3
-done
-
-if ! $_SSH_BACK; then
-    echo ""
-    echo "ERROR: VM did not come back online after reboot"
-    exit 1
-fi
-
-# Give the desktop a moment to fully load after login
-sleep 5
+# No reboot needed — GDM autologin, GSettings overrides, and all
+# config files are on disk and will take effect on the next boot
+# (when the golden image is cloned and started by vm-start.sh).
+# A reboot here would kill the tart process.
 
 # --- Shutdown ---
 
