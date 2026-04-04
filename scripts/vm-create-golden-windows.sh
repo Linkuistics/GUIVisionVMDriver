@@ -185,21 +185,15 @@ echo "Preparing UEFI firmware and TPM..."
 
 _QEMU_PREFIX=$(dirname "$(dirname "$(command -v qemu-system-aarch64)")")
 _UEFI_CODE="$_QEMU_PREFIX/share/qemu/edk2-aarch64-code.fd"
-_UEFI_VARS_TEMPLATE="$_QEMU_PREFIX/share/qemu/edk2-aarch64-vars.fd"
-
 if [[ ! -f "$_UEFI_CODE" ]]; then
     echo "ERROR: UEFI firmware not found at $_UEFI_CODE"
     echo "Ensure qemu is installed via Homebrew: brew install qemu"
     exit 1
 fi
 
-if [[ ! -f "$_UEFI_VARS_TEMPLATE" ]]; then
-    echo "ERROR: UEFI vars template not found at $_UEFI_VARS_TEMPLATE"
-    exit 1
-fi
-
-# Create writable copy of UEFI vars
-cp "$_UEFI_VARS_TEMPLATE" "$_SETUP_EFIVARS"
+# AArch64 QEMU doesn't ship a vars template — create a blank 64MB file.
+# The UEFI firmware initializes it on first boot.
+truncate -s 64M "$_SETUP_EFIVARS"
 
 # Create TPM state directory and start swtpm
 mkdir -p "$_SETUP_TPM_DIR"
