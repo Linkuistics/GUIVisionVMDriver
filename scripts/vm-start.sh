@@ -271,7 +271,7 @@ elif [[ "$_TOOL" == "qemu" ]]; then
         -drive "if=pflash,format=raw,file=$_CLONE_EFIVARS" \
         -chardev "socket,id=chrtpm,path=$_TPM_SOCKET" \
         -tpmdev "emulator,id=tpm0,chardev=chrtpm" \
-        -device "tpm-tis-sysbus,tpmdev=tpm0" \
+        -device "tpm-tis-device,tpmdev=tpm0" \
         -drive "file=$_CLONE_QCOW2,if=none,id=hd0,format=qcow2" \
         -device "nvme,serial=guivision,drive=hd0" \
         -device "virtio-net-pci,netdev=net0" \

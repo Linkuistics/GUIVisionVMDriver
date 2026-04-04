@@ -229,7 +229,7 @@ qemu-system-aarch64 \
     -drive "if=pflash,format=raw,file=$_SETUP_EFIVARS" \
     -chardev "socket,id=chrtpm,path=$_TPM_SOCKET" \
     -tpmdev "emulator,id=tpm0,chardev=chrtpm" \
-    -device "tpm-tis-sysbus,tpmdev=tpm0" \
+    -device "tpm-tis-device,tpmdev=tpm0" \
     -drive "file=$_SETUP_QCOW2,if=none,id=hd0,format=qcow2" \
     -device "nvme,serial=guivision,drive=hd0" \
     -drive "file=$_CACHED_ISO,media=cdrom,readonly=on" \
