@@ -727,6 +727,17 @@ if ! echo "$_TCC_FINAL" | grep -q "^2|"; then
 fi
 echo "  guivision-agent installed and TCC entry verified."
 
+# --- Clean desktop state before shutdown ---
+# Close Terminal and clear saved application state so the golden image
+# boots to a clean desktop. Terminal may have opened during the SIP/TCC
+# recovery boot cycle or from SSH session activity.
+
+echo "Cleaning desktop state..."
+vm_ssh "osascript -e 'tell application \"Terminal\" to quit' 2>/dev/null || true"
+sleep 2
+vm_ssh "rm -rf ~/Library/Saved\ Application\ State/*" 2>/dev/null || true
+vm_ssh "defaults write com.apple.loginwindow TALLogoutSavesState -bool false" 2>/dev/null || true
+
 # --- Shutdown ---
 
 echo "Shutting down VM..."
