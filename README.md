@@ -13,6 +13,11 @@ A Swift library and CLI for interacting with machines via VNC and SSH. Designed 
 - Type text with automatic handling of uppercase and shifted symbols
 - Track cursor shape and position
 
+**OCR text recognition:**
+- Find text on the VNC screen using Apple Vision framework
+- Returns JSON with text, bounding box coordinates, and confidence
+- Optional polling mode to wait for text to appear (with timeout)
+
 **SSH command execution and file transfer:**
 - Execute commands over SSH with stdout/stderr/exit code capture
 - Upload and download files via SCP
@@ -58,6 +63,11 @@ guivision input mouse-up --vnc localhost:5901 100 200
 guivision input move --vnc localhost:5901 100 200
 guivision input scroll --vnc localhost:5901 500 400 --dy -3
 guivision input drag --vnc localhost:5901 100 100 400 400
+
+# OCR — find text on screen
+guivision find-text --vnc localhost:5901 "Terminal"             # find text, return JSON with coords
+guivision find-text --vnc localhost:5901 "Loading" --timeout 30 # poll until text appears (30s max)
+guivision find-text --vnc localhost:5901                        # return all recognized text
 
 # SSH
 guivision ssh exec --ssh admin@192.168.64.100 "uname -a"
@@ -199,9 +209,12 @@ The macOS golden image (`guivision-golden-macos-tahoe`) includes:
 - **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin`
 - **Xcode Command Line Tools** — `swift`, `clang`, `git`, `make`
 - **Homebrew** — `/opt/homebrew/bin/brew`
+- **guivision-agent** — in-VM accessibility agent at `/usr/local/bin/guivision-agent`
+- **TCC accessibility grant** — agent has accessibility permission via system TCC database (with code signing requirement)
 - **Solid gray wallpaper** — clean background for screenshot analysis
 - **No desktop widgets** — no visual clutter
 - **Session restore disabled** — apps don't reopen old windows
+- **SIP enabled** — standard security posture (SIP is temporarily disabled during image creation to write the TCC grant, then re-enabled)
 
 ## Requirements
 

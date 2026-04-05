@@ -73,6 +73,26 @@ guivision input drag --vnc host:port fromX fromY toX toY [--button left] [--step
 
 **Mouse buttons:** `left`, `right`, `middle`, `center`
 
+### OCR Text Recognition
+
+```bash
+# Find text on the VNC screen (returns JSON array of matches with coordinates)
+guivision find-text --vnc host:port "search text"
+
+# Wait up to N seconds for text to appear (polls every 500ms)
+guivision find-text --vnc host:port "Loading..." --timeout 30
+
+# Return all recognized text on screen
+guivision find-text --vnc host:port
+```
+
+Output is a JSON array:
+```json
+[{"text":"Terminal","x":248.0,"y":91.0,"width":55.0,"height":12.0,"confidence":0.95}]
+```
+
+Uses Apple Vision framework (`VNRecognizeTextRequest` with `.accurate` recognition level). Coordinates are in pixels with top-left origin, matching VNC input coordinates — click at `x + width/2`, `y + height/2` to hit the center of the text.
+
 ### SSH
 
 ```bash
@@ -148,6 +168,11 @@ try await capture.withConnection { conn in
 
 // Cursor state (shape, position — depends on server support)
 let cursor = await capture.cursorState
+
+// OCR text recognition
+let image = try await capture.captureImage()
+let matches = TextRecognizer.recognizeText(in: image)
+// Each match: TextMatch(text: "Terminal", x: 248, y: 91, width: 55, height: 12, confidence: 0.95)
 
 // SSH
 let ssh = SSHClient(spec: SSHSpec(host: "192.168.64.100", user: "admin"))
@@ -236,9 +261,12 @@ The macOS golden image (`guivision-golden-macos-tahoe`) provides:
 - **User:** `admin` with SSH key auth (host's public key in `authorized_keys`)
 - **Xcode Command Line Tools:** `swift`, `swiftc`, `clang`, `git`, `make`, `ld`
 - **Homebrew:** `/opt/homebrew/bin/brew` (in PATH via `.zprofile`)
+- **guivision-agent** at `/usr/local/bin/guivision-agent` — in-VM accessibility agent for GUI automation (window listing, element inspection, screenshots, actions)
+- **TCC accessibility grant** — agent has system-level accessibility permission (written to TCC database with code signing requirement during a SIP disable/enable cycle)
+- **SIP enabled** — standard security posture after image creation
 - **Desktop:** solid gray wallpaper, no widgets, no Terminal, session restore disabled
 
-You can compile and run Swift code, install packages with Homebrew, and use standard Unix tools inside the VM via SSH.
+You can compile and run Swift code, install packages with Homebrew, and use standard Unix tools inside the VM via SSH. The guivision-agent provides accessibility APIs for GUI testing when launched in a desktop session context.
 
 ## Writing Test Scripts
 
@@ -285,8 +313,10 @@ source scripts/vm-stop.sh
 - After sending keyboard input, add `sleep` for the VM to process events
 - VNC cursor is a separate overlay — it doesn't appear in screenshots
 - Use `screen-size` to compute click coordinates relative to the display
+- Use `find-text` to locate UI elements by their text content instead of hardcoded coordinates
 - The `--platform` flag affects modifier key mapping — use `macos` for tart VMs
 - SSH key auth only; password auth is not supported by the SSH client
+- `AXIsProcessTrusted()` returns false when the agent is run via SSH (macOS "responsible client" audit session issue) — the TCC grant works correctly when the agent is launched by launchd in a desktop session
 
 ## Connection Caching (Server Mode)
 
@@ -296,7 +326,7 @@ The CLI transparently manages a background server process that holds persistent 
 
 1. The first `guivision` command auto-starts a background server process that connects to the VNC/SSH endpoints
 2. Subsequent commands reuse the existing server — no reconnection needed
-3. The server self-terminates after 10 seconds of inactivity
+3. The server self-terminates after 300 seconds (5 minutes) of inactivity
 4. Different connection targets (different `--vnc`/`--ssh` values) get independent server instances
 
 ### What this means for scripts
