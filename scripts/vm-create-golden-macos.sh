@@ -237,7 +237,7 @@ fi
 # --- Close Terminal and clean desktop state ---
 
 echo "Closing Terminal..."
-vm_ssh "osascript -e 'tell application \"Terminal\" to quit' 2>/dev/null || true"
+vm_ssh "killall Terminal 2>/dev/null || true"
 sleep 2
 vm_ssh "rm -rf ~/Library/Saved\ Application\ State/*" 2>/dev/null || true
 
@@ -733,15 +733,21 @@ echo "  guivision-agent installed and TCC entry verified."
 # recovery boot cycle or from SSH session activity.
 
 echo "Cleaning desktop state..."
-vm_ssh "osascript -e 'tell application \"Terminal\" to quit' 2>/dev/null || true"
+# The Cirrus Labs vanilla image boots with Terminal open by default.
+# Kill it and clear saved state before a CLEAN shutdown.
+vm_ssh "killall Terminal 2>/dev/null || true"
 sleep 2
 vm_ssh "rm -rf ~/Library/Saved\ Application\ State/*" 2>/dev/null || true
-vm_ssh "defaults write com.apple.loginwindow TALLogoutSavesState -bool false" 2>/dev/null || true
 
-# --- Shutdown ---
+# --- Clean shutdown ---
+# CRITICAL: Use System Events "shut down" (not `sudo shutdown -h now`).
+# `sudo shutdown -h now` kills loginwindow before it can save session state,
+# causing apps (including Terminal) to be relaunched on next boot.
+# System Events triggers loginwindow's full shutdown sequence which properly
+# records that no apps are open. (From TestAnyware/VMCommands.swift.)
 
-echo "Shutting down VM..."
-vm_ssh "sudo shutdown -h now" 2>/dev/null || true
+echo "Shutting down VM (clean, via System Events)..."
+vm_ssh "osascript -e 'tell application \"System Events\" to shut down'" 2>/dev/null || true
 
 echo -n "Waiting for shutdown..."
 for i in $(seq 1 60); do
