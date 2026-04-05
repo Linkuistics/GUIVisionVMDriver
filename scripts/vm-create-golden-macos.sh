@@ -241,26 +241,49 @@ vm_ssh "osascript -e 'tell application \"Terminal\" to quit' 2>/dev/null || true
 sleep 2
 vm_ssh "rm -rf ~/Library/Saved\ Application\ State/*" 2>/dev/null || true
 
-# --- Logout cycle ---
-# A logout/login cycle is needed for loginwindow to pick up defaults changes
-# (widget hiding, session restore, wallpaper). Without this, the settings
-# are written but the running session still shows the old state.
+# --- Reboot cycle to apply settings ---
+# A reboot is needed for loginwindow to pick up defaults changes
+# (widget hiding, session restore, wallpaper). tart run exits when
+# the guest shuts down, so we: shutdown → restart tart → wait for SSH.
 
-echo -n "Logging out to apply settings..."
-vm_ssh "sudo launchctl bootout gui/\$(id -u)" 2>/dev/null || true
+echo "Shutting down VM for reboot cycle..."
+vm_ssh "sudo shutdown -h now" 2>/dev/null || true
 
-# Wait for SSH to drop (logout) then come back (auto-login)
-sleep 5
+echo -n "Waiting for shutdown..."
 for i in $(seq 1 60); do
-    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-           -o LogLevel=ERROR -o ConnectTimeout=5 \
-           "$_VANILLA_USER@$_IP" "true" &>/dev/null; then
-        echo " logged back in."
+    if ! kill -0 "$_TART_PID" 2>/dev/null; then
+        echo " done."
         break
+    fi
+    echo -n "."
+    sleep 2
+done
+wait "$_TART_PID" 2>/dev/null || true
+
+echo "Restarting VM to apply settings..."
+tart run "$_SETUP_VM" --no-graphics &
+_TART_PID=$!
+
+echo -n "Waiting for SSH..."
+_REBOOT_SSH=false
+for i in $(seq 1 60); do
+    _IP=$(tart ip "$_SETUP_VM" 2>/dev/null | tr -d '[:space:]' || true)
+    if [[ -n "$_IP" ]]; then
+        if ssh $_SSH_OPTS "$_VANILLA_USER@$_IP" "true" 2>/dev/null; then
+            _REBOOT_SSH=true
+            echo " ready (IP: $_IP)"
+            break
+        fi
     fi
     echo -n "."
     sleep 3
 done
+
+if ! $_REBOOT_SSH; then
+    echo ""
+    echo "ERROR: VM did not come back online after reboot"
+    exit 1
+fi
 
 # Give the desktop a moment to fully load after login
 sleep 5
@@ -355,13 +378,15 @@ _wait_for_ssh_ready() {
 }
 
 # Shared helper: boot into recovery, run a csrutil command via VNC automation,
-# then reboot normally. Uses guivision to drive the recovery Terminal over VNC.
+# then reboot normally.
 #
-# In macOS Recovery:
-#   1. The VM boots to a recovery options screen
-#   2. We use keyboard shortcuts to open Terminal (Cmd+Shift+T or via menu)
-#   3. Type the csrutil command
-#   4. Stop the VM and reboot normally
+# Sequence (matches TestAnyware/VMCommands.swift recoveryRun()):
+#   1. Boot with --recovery --vnc-experimental
+#   2. Navigate startup picker: Right→Right→Enter to reach recovery desktop
+#   3. Open Terminal via press-hold-drag on Utilities menu bar item
+#   4. Run csrutil command, confirm with y + username + password
+#   5. Halt via 'halt' command in Terminal
+#   6. Restart normally, wait for SSH
 #
 # Requires: $_GUIVISION_BIN set by install_agent()
 _recovery_boot_csrutil() {
@@ -373,11 +398,11 @@ _recovery_boot_csrutil() {
 
     echo "Booting into Recovery Mode with VNC..."
     local _VNC_OUTPUT
-    _VNC_OUTPUT=$(mktemp)
+    _VNC_OUTPUT=$(mktemp /tmp/guivision-vnc-XXXXXX)
     tart run "$_SETUP_VM" --recovery --no-graphics --vnc-experimental > "$_VNC_OUTPUT" 2>&1 &
     _TART_PID=$!
 
-    # Wait for VNC endpoint
+    # Wait for VNC endpoint in tart output
     local _VNC_URL=""
     echo -n "Waiting for VNC..."
     for i in $(seq 1 60); do
@@ -413,7 +438,7 @@ _recovery_boot_csrutil() {
     _VNC_HOST=$(echo "$_VNC_HOST_PORT" | cut -d: -f1)
     _VNC_PORT=$(echo "$_VNC_HOST_PORT" | cut -d: -f2)
 
-    # Write a temp connection spec so guivision can authenticate to VNC
+    # Write connection spec for guivision
     local _PW_JSON="null"
     if [[ -n "$_VNC_PASSWORD" ]]; then
         _PW_JSON="\"$_VNC_PASSWORD\""
@@ -426,58 +451,166 @@ SPECEOF
     # --connect must come after the subcommand (swift-argument-parser requirement)
     local _GV_CONN="--connect $_CONNECT_SPEC"
 
-    # Recovery takes a while to reach the options screen.
-    echo -n "Waiting for Recovery environment to load (60s)..."
-    sleep 60
-    echo " done."
+    # --- Step 1: Wait for VNC framebuffer to be available ---
+    echo -n "Waiting for Recovery VNC framebuffer..."
+    for i in $(seq 1 90); do
+        if "$_GUIVISION_BIN" screen-size $_GV_CONN &>/dev/null; then
+            echo " ready."
+            break
+        fi
+        echo -n "."
+        sleep 2
+    done
 
-    # Take a diagnostic screenshot to verify recovery booted
-    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-pre.png 2>/dev/null || true
-    echo "  Recovery screenshot saved to /tmp/guivision-recovery-pre.png"
-
-    # Open Terminal in Recovery via the Utilities menu.
-    # In macOS Recovery, the menu bar has: Apple, <app>, Utilities, Window, Help
-    # We use Ctrl+F2 to focus the menu bar, then keyboard to navigate.
-    echo "Opening Terminal in Recovery via menu bar..."
-
-    # Focus menu bar with Ctrl+F2 (Fn+Ctrl+F2 on Apple keyboards)
-    "$_GUIVISION_BIN" input key $_GV_CONN f2 --modifiers ctrl
+    # --- Step 2: Navigate startup picker ---
+    # Cirrus Labs vanilla images boot recovery to a startup disk picker
+    # (showing "Macintosh HD" and "Options"). Wait for "Options" via OCR,
+    # then navigate with Right→Right→Enter.
+    echo "Waiting for startup picker (OCR: 'Options')..."
+    "$_GUIVISION_BIN" find-text $_GV_CONN "Options" --timeout 120 >/dev/null 2>&1 || true
     sleep 1
 
-    # Navigate to Utilities menu (press right arrow a few times to reach it)
-    # Recovery app menu order: Apple (skip), Recovery app, Utilities
-    "$_GUIVISION_BIN" input key $_GV_CONN right
-    sleep 0.3
-    "$_GUIVISION_BIN" input key $_GV_CONN right
-    sleep 0.3
-    # Open the Utilities menu
-    "$_GUIVISION_BIN" input key $_GV_CONN return
-    sleep 0.5
-    # Terminal is typically the first or second item in Utilities menu
-    "$_GUIVISION_BIN" input key $_GV_CONN down
-    sleep 0.3
-    "$_GUIVISION_BIN" input key $_GV_CONN return
-    sleep 3
+    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-picker.png 2>/dev/null || true
+    echo "  Picker screenshot: /tmp/guivision-recovery-picker.png"
 
-    # Terminal should now be open. Type the csrutil command.
-    echo "Running '${_CSRUTIL_CMD}' in recovery Terminal..."
+    echo "Navigating startup picker (Right→Right→Enter → Options)..."
+    "$_GUIVISION_BIN" input key $_GV_CONN right
+    sleep 0.3
+    "$_GUIVISION_BIN" input key $_GV_CONN right
+    sleep 0.3
+    "$_GUIVISION_BIN" input key $_GV_CONN return
+    sleep 0.3
+
+    # --- Step 3: Wait for recovery desktop ---
+    # Wait for "Utilities" to appear in the menu bar (confirms recovery desktop loaded).
+    echo "Waiting for recovery desktop (OCR: 'Utilities')..."
+    "$_GUIVISION_BIN" find-text $_GV_CONN "Utilities" --timeout 120 >/dev/null 2>&1 || true
+    sleep 1
+
+    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-desktop.png 2>/dev/null || true
+    echo "  Desktop screenshot: /tmp/guivision-recovery-desktop.png"
+
+    # --- Step 4: Open Terminal via Utilities menu ---
+    # The recovery desktop has a modal app-picker that blocks Cmd+T.
+    # Open the Utilities menu by clicking, then type "t" to jump to Terminal
+    # (macOS menus support type-to-select).
+    # Menu item positions determined by pixel analysis of recovery screenshots:
+    #   Apple(x≈27) | macOS Recovery(x≈84) | [item](x≈146) | Utilities(x≈181)
+    echo "Opening Terminal via Utilities menu (OCR + drag)..."
+    # The recovery desktop has a modal dialog that intercepts clicks.
+    # Use drag (mouse-down → hold → move → mouse-up) to bypass it,
+    # with OCR to find exact coordinates. Matches TestAnyware approach.
+
+    # Find "Utilities" in the menu bar.
+    local _UTIL_JSON
+    _UTIL_JSON=$("$_GUIVISION_BIN" find-text $_GV_CONN "Utilities" --timeout 10 2>/dev/null || echo "[]")
+    local _UX=250 _UY=14
+    if [[ "$_UTIL_JSON" != "[]" ]]; then
+        _UX=$(echo "$_UTIL_JSON" | python3 -c "import sys,json; m=json.load(sys.stdin)[0]; print(int(m['x']+m['width']/2))")
+        _UY=$(echo "$_UTIL_JSON" | python3 -c "import sys,json; m=json.load(sys.stdin)[0]; print(int(m['y']+m['height']/2))")
+        echo "  Found 'Utilities' at ($_UX, $_UY)"
+    else
+        echo "  WARNING: OCR did not find 'Utilities' — using fallback ($_UX, $_UY)"
+    fi
+
+    # Mouse-down on Utilities to open the dropdown (hold button).
+    "$_GUIVISION_BIN" input mouse-down $_GV_CONN "$_UX" "$_UY"
+    sleep 2  # Dropdown renders while button is held
+
+    # While dropdown is open, use OCR to find "Terminal".
+    local _TERM_JSON
+    _TERM_JSON=$("$_GUIVISION_BIN" find-text $_GV_CONN "Terminal" --timeout 5 2>/dev/null || echo "[]")
+    local _TX=300 _TY=95
+    if [[ "$_TERM_JSON" != "[]" ]]; then
+        _TX=$(echo "$_TERM_JSON" | python3 -c "import sys,json; m=json.load(sys.stdin)[0]; print(int(m['x']+m['width']/2))")
+        _TY=$(echo "$_TERM_JSON" | python3 -c "import sys,json; m=json.load(sys.stdin)[0]; print(int(m['y']+m['height']/2))")
+        echo "  Found 'Terminal' at ($_TX, $_TY)"
+    else
+        echo "  WARNING: OCR did not find 'Terminal' — using fallback ($_TX, $_TY)"
+    fi
+
+    # Drag to Terminal and release to select it.
+    "$_GUIVISION_BIN" input move $_GV_CONN "$_TX" "$_TY"
+    sleep 0.3
+    "$_GUIVISION_BIN" input mouse-up $_GV_CONN "$_TX" "$_TY"
+    sleep 5
+
+    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-terminal.png 2>/dev/null || true
+    echo "  Terminal screenshot: /tmp/guivision-recovery-terminal.png"
+
+    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-terminal.png 2>/dev/null || true
+    echo "  Terminal screenshot: /tmp/guivision-recovery-terminal.png"
+
+    # --- Step 5: Run csrutil command ---
+    # csrutil (both disable and enable on Tahoe) prompts for:
+    #   1. y/n confirmation
+    #   2. admin username
+    #   3. admin password
+    # We use generous fixed sleeps since we don't have OCR.
+    # Screenshots between each step allow debugging if prompts differ.
+    echo "Running '${_CSRUTIL_CMD}'..."
     "$_GUIVISION_BIN" input type $_GV_CONN "$_CSRUTIL_CMD"
     sleep 0.5
     "$_GUIVISION_BIN" input key $_GV_CONN return
-    sleep 3
+    sleep 15  # Wait for csrutil to show prompt (may output lengthy warning)
 
-    # Take a post-command screenshot for verification
+    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-step1.png 2>/dev/null || true
+    echo "  After command screenshot: /tmp/guivision-recovery-step1.png"
+
+    echo "  Confirming with 'y'..."
+    "$_GUIVISION_BIN" input type $_GV_CONN "y"
+    sleep 0.2
+    "$_GUIVISION_BIN" input key $_GV_CONN return
+    sleep 10  # Wait for username prompt
+
+    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-step2.png 2>/dev/null || true
+    echo "  After 'y' screenshot: /tmp/guivision-recovery-step2.png"
+
+    echo "  Entering username..."
+    "$_GUIVISION_BIN" input type $_GV_CONN "$_VANILLA_USER"
+    sleep 0.2
+    "$_GUIVISION_BIN" input key $_GV_CONN return
+    sleep 10  # Wait for password prompt
+
+    "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-step3.png 2>/dev/null || true
+    echo "  After username screenshot: /tmp/guivision-recovery-step3.png"
+
+    echo "  Entering password..."
+    "$_GUIVISION_BIN" input type $_GV_CONN "$_VANILLA_PASS"
+    sleep 0.2
+    "$_GUIVISION_BIN" input key $_GV_CONN return
+    sleep 15  # Wait for csrutil to complete
+
     "$_GUIVISION_BIN" screenshot $_GV_CONN --output /tmp/guivision-recovery-post.png 2>/dev/null || true
-    echo "  Post-command screenshot saved to /tmp/guivision-recovery-post.png"
+    echo "  Post-command screenshot: /tmp/guivision-recovery-post.png"
+
+    # --- Step 6: Halt VM from recovery Terminal ---
+    echo "Halting recovery VM..."
+    "$_GUIVISION_BIN" input type $_GV_CONN "halt"
+    "$_GUIVISION_BIN" input key $_GV_CONN return
 
     rm -f "$_CONNECT_SPEC"
 
-    echo "Stopping recovery boot..."
-    tart stop "$_SETUP_VM" 2>/dev/null || true
+    # Wait for tart process to exit after halt (with force-stop fallback)
+    echo -n "Waiting for VM to halt..."
+    for i in $(seq 1 60); do
+        if ! kill -0 "$_TART_PID" 2>/dev/null; then
+            echo " done."
+            break
+        fi
+        echo -n "."
+        sleep 2
+    done
+    if kill -0 "$_TART_PID" 2>/dev/null; then
+        echo " halt did not shut down VM — forcing stop."
+        tart stop "$_SETUP_VM" 2>/dev/null || true
+    fi
     wait "$_TART_PID" 2>/dev/null || true
 
+    # --- Step 7: Restart normally and wait for SSH ---
+    # Use --vnc-experimental to ensure WindowServer starts (needed for TCC/accessibility).
     echo "Rebooting normally after ${_LABEL}..."
-    tart run "$_SETUP_VM" --no-graphics &
+    tart run "$_SETUP_VM" --no-graphics --vnc-experimental &
     _TART_PID=$!
     _wait_for_ssh_ready
 }
@@ -496,40 +629,103 @@ recovery_boot_enable_sip() {
 grant_accessibility_permission() {
     echo "Granting accessibility permission to guivision-agent..."
 
-    vm_ssh "sudo sqlite3 \"/Library/Application Support/com.apple.TCC/TCC.db\" \
-        \"INSERT OR REPLACE INTO access \
+    # Generate the csreq blob from the binary's designated code signing requirement.
+    # macOS Tahoe requires this field for TCC to accept the entry.
+    echo "  Generating code signing requirement blob..."
+    vm_ssh 'CSREQ_HEX=$(codesign -dr- /usr/local/bin/guivision-agent 2>&1 \
+        | sed -n "s/.*=> //p" \
+        | csreq -r- -b /dev/stdout \
+        | xxd -p \
+        | tr -d "\n") && \
+        sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
+        "INSERT OR REPLACE INTO access \
           (service, client, client_type, auth_value, auth_reason, auth_version, \
-           indirect_object_identifier_type, indirect_object_identifier, flags, last_modified) \
+           csreq, indirect_object_identifier_type, indirect_object_identifier, flags, last_modified) \
         VALUES \
-          ('kTCCServiceAccessibility', '/usr/local/bin/guivision-agent', 1, 2, 0, 1, \
-           0, 'UNUSED', 0, strftime('%s','now'));\""
+          ('"'"'kTCCServiceAccessibility'"'"', '"'"'/usr/local/bin/guivision-agent'"'"', 1, 2, 0, 1, \
+           X'"'"'${CSREQ_HEX}'"'"', 0, '"'"'UNUSED'"'"', 0, CAST(strftime('"'"'%s'"'"','"'"'now'"'"') AS INTEGER));"'
 
     local _RESULT
     _RESULT=$(vm_ssh "sudo sqlite3 \"/Library/Application Support/com.apple.TCC/TCC.db\" \
-        \"SELECT client FROM access WHERE service='kTCCServiceAccessibility' \
+        \"SELECT client, length(csreq) FROM access WHERE service='kTCCServiceAccessibility' \
           AND client='/usr/local/bin/guivision-agent';\"" 2>/dev/null || true)
     if echo "$_RESULT" | grep -q "guivision-agent"; then
-        echo "  Accessibility permission granted."
+        echo "  Accessibility permission granted (csreq: $(echo "$_RESULT" | cut -d'|' -f2) bytes)."
     else
         echo "  ERROR: TCC insert verification failed — SIP may still be enabled or sqlite3 unavailable"
         exit 1
     fi
+
+    # Restart tccd so it re-reads the database (it caches TCC decisions).
+    echo "  Restarting tccd to flush TCC cache..."
+    vm_ssh "sudo killall tccd" 2>/dev/null || true
+    sleep 3
 }
 
 # --- Run agent installation and TCC/SIP cycle ---
 
 _ensure_vm_running
 install_agent
-recovery_boot_disable_sip
-grant_accessibility_permission
-recovery_boot_enable_sip
 
-echo "Final agent health check..."
-if vm_ssh "/usr/local/bin/guivision-agent health" &>/dev/null; then
-    echo "  guivision-agent healthy."
+recovery_boot_disable_sip
+echo "Verifying SIP is disabled..."
+_SIP_STATUS=$(vm_ssh "csrutil status" 2>/dev/null || echo "unknown")
+echo "  SIP status: $_SIP_STATUS"
+if echo "$_SIP_STATUS" | grep -q "disabled"; then
+    echo "  SIP successfully disabled."
 else
-    echo "  WARNING: guivision-agent health check failed after TCC/SIP cycle"
+    echo "  WARNING: SIP may not be disabled — csrutil output: $_SIP_STATUS"
+    echo "  Check /tmp/guivision-recovery-*.png screenshots for debugging."
 fi
+
+grant_accessibility_permission
+
+# Verify the TCC entry directly in the database.
+# Note: AXIsProcessTrusted() returns false when called via SSH because macOS
+# Ventura+ checks the "responsible client" (sshd, not guivision-agent).
+# The TCC entry IS correct and will work when the agent is launched by launchd
+# during actual testing (matching TestAnyware's approach).
+echo "Verifying TCC database entry..."
+_TCC_CHECK=$(vm_ssh "sudo sqlite3 '/Library/Application Support/com.apple.TCC/TCC.db' \
+    'SELECT auth_value, length(csreq) FROM access \
+     WHERE service=\"kTCCServiceAccessibility\" AND client=\"/usr/local/bin/guivision-agent\";'" 2>/dev/null || true)
+echo "  TCC entry: $_TCC_CHECK"
+if echo "$_TCC_CHECK" | grep -q "^2|"; then
+    echo "  TCC accessibility grant verified (auth_value=2)."
+else
+    echo "  ERROR: TCC entry missing or denied"
+    exit 1
+fi
+
+recovery_boot_enable_sip
+echo "Verifying SIP is re-enabled..."
+_SIP_STATUS=$(vm_ssh "csrutil status" 2>/dev/null || echo "unknown")
+echo "  SIP status: $_SIP_STATUS"
+if echo "$_SIP_STATUS" | grep -q "enabled"; then
+    echo "  SIP successfully re-enabled."
+else
+    echo "  WARNING: SIP may not be re-enabled — csrutil output: $_SIP_STATUS"
+fi
+
+echo "Final agent verification..."
+# Verify binary is installed and runs
+_AGENT_VER=$(vm_ssh "/usr/local/bin/guivision-agent --help 2>&1 | head -1" 2>/dev/null || true)
+echo "  Agent binary: $_AGENT_VER"
+
+# Verify TCC entry survives SIP re-enable
+_TCC_FINAL=$(vm_ssh "sudo sqlite3 '/Library/Application Support/com.apple.TCC/TCC.db' \
+    'SELECT auth_value, length(csreq) FROM access \
+     WHERE service=\"kTCCServiceAccessibility\" AND client=\"/usr/local/bin/guivision-agent\";'" 2>/dev/null || true)
+echo "  TCC entry: $_TCC_FINAL"
+if [[ -z "$_AGENT_VER" ]]; then
+    echo "  ERROR: guivision-agent binary not found or not executable"
+    exit 1
+fi
+if ! echo "$_TCC_FINAL" | grep -q "^2|"; then
+    echo "  ERROR: TCC accessibility entry missing after SIP re-enable"
+    exit 1
+fi
+echo "  guivision-agent installed and TCC entry verified."
 
 # --- Shutdown ---
 

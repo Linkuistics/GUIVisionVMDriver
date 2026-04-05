@@ -32,6 +32,7 @@ public struct HTTPResponse: Sendable {
 
 public enum HTTPParserError: Error, Sendable {
     case missingHeaderBlock
+    case bodyIncomplete
     case malformedRequestLine(String)
     case malformedStatusLine(String)
 }
@@ -150,7 +151,11 @@ public enum HTTPParser: Sendable {
         let bodyStart = separatorRange.upperBound
         let body: Data
         if let length = contentLength, length > 0 {
-            let bodyEnd = data.index(bodyStart, offsetBy: length, limitedBy: data.endIndex) ?? data.endIndex
+            let available = data.distance(from: bodyStart, to: data.endIndex)
+            guard available >= length else {
+                throw HTTPParserError.bodyIncomplete
+            }
+            let bodyEnd = data.index(bodyStart, offsetBy: length)
             body = Data(data[bodyStart..<bodyEnd])
         } else {
             body = Data()

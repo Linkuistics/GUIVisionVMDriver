@@ -373,6 +373,18 @@ extension ServerClient {
         return CGSize(width: parsed.width, height: parsed.height)
     }
 
+    // MARK: OCR
+
+    /// Recognize text in the current VNC framebuffer.
+    public func ocr(find: String? = nil) async throws -> [TextMatch] {
+        struct OCRRequest: Encodable { let find: String? }
+        let body = try jsonBody(OCRRequest(find: find))
+        let request = HTTPRequest(method: "POST", path: "/ocr", body: body)
+        let response = try await Self.send(request, to: socketPath)
+        try checkSuccess(response)
+        return try JSONDecoder().decode([TextMatch].self, from: response.body)
+    }
+
     // MARK: Keyboard
 
     /// Press a key (down + up) with optional modifiers.

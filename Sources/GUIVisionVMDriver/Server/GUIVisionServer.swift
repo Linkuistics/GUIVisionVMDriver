@@ -338,6 +338,10 @@ public actor GUIVisionServer {
         case ("POST", "/record/stop"):
             return await handleRecordStop()
 
+        // OCR: recognize text in the current framebuffer
+        case ("POST", "/ocr"):
+            return await handleOCR(request)
+
         // Stop the server
         case ("POST", "/stop"):
             return handleStop()
@@ -346,6 +350,7 @@ public actor GUIVisionServer {
         case (_, "/health"),
              (_, "/screen-size"),
              (_, "/screenshot"),
+             (_, "/ocr"),
              (_, "/input/key"),
              (_, "/input/key-down"),
              (_, "/input/key-up"),
@@ -406,6 +411,39 @@ public actor GUIVisionServer {
             let region = try parseRegion(from: request)
             let pngData = try await capture.screenshot(region: region)
             return HTTPResponse(statusCode: 200, contentType: "image/png", body: pngData)
+        } catch {
+            return serverError(error)
+        }
+    }
+
+    private func handleOCR(_ request: HTTPRequest) async -> HTTPResponse {
+        struct OCRRequest: Decodable {
+            let find: String?
+            let minimumConfidence: Float?
+        }
+        do {
+            let findText: String?
+            let minConf: Float
+            if let body = request.body, !body.isEmpty {
+                let req = try JSONDecoder().decode(OCRRequest.self, from: body)
+                findText = req.find
+                minConf = req.minimumConfidence ?? 0.5
+            } else {
+                findText = nil
+                minConf = 0.5
+            }
+
+            let image = try await capture.captureImage()
+            var matches = TextRecognizer.recognizeText(in: image, minimumConfidence: minConf)
+
+            if let find = findText {
+                matches = matches.filter {
+                    $0.text.localizedCaseInsensitiveContains(find)
+                }
+            }
+
+            let data = try JSONEncoder().encode(matches)
+            return HTTPResponse(statusCode: 200, contentType: "application/json", body: data)
         } catch {
             return serverError(error)
         }
