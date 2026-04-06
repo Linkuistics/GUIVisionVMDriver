@@ -16,17 +16,16 @@
 #   https://www.microsoft.com/en-us/software-download/windows11arm64
 # Download the ARM64 ISO from that page.
 #
-# The Windows installation must be completed manually via VNC during setup.
-# The script boots from the ISO, prints VNC connection info, and waits for
-# you to complete the install. Create a user named 'admin' with password
-# 'admin' during the OOBE. Once at the desktop, the script continues
-# automatically when SSH becomes reachable.
+# The Windows installation is fully automated via autounattend.xml, which is
+# served to Windows Setup on a virtual USB drive. The script boots from the
+# ISO, installs Windows unattended (including OpenSSH Server), and waits for
+# SSH to become reachable. VNC is available for monitoring progress.
+# Typical install time: 20-40 minutes.
 #
 # Prerequisites:
 #   - qemu-system-aarch64 installed (brew install qemu)
 #   - qemu-img installed (comes with qemu)
 #   - swtpm installed (brew install swtpm)
-#   - mtools installed (brew install mtools)
 #   - SSH public key at ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub
 #
 # What this creates:
@@ -45,13 +44,11 @@
 # The golden image is never run directly — use qemu-img create -b for COW clones.
 
 set -eu
+trap 'echo "SCRIPT ERROR at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 _VERSION="11"
 _NAME=""
-# NOTE: The initial user in the Windows evaluation image is uncertain.
-# It may be "User", "IEUser", or something else. Update this after first run.
-_INITIAL_USER="User"
-_WIN_USER="$_INITIAL_USER"
+_WIN_USER="admin"
 _ADMIN_PASS="admin"
 _SETUP_PREFIX="guivision-setup-$$"
 _SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=30"
@@ -103,11 +100,6 @@ if ! command -v swtpm &>/dev/null; then
     exit 1
 fi
 
-if ! command -v mformat &>/dev/null; then
-    echo "ERROR: mtools not found. Install with: brew install mtools"
-    exit 1
-fi
-
 # Find SSH public key
 _SSH_KEY=""
 for keyfile in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub; do
@@ -144,7 +136,8 @@ cleanup() {
     fi
     rm -f "$_ASKPASS_FILE" 2>/dev/null || true
     rm -f "$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock" 2>/dev/null || true
-    rm -f "$_CACHE_DIR/${_SETUP_PREFIX}-startup.img" 2>/dev/null || true
+    rm -f "$_CACHE_DIR/${_SETUP_PREFIX}-autounattend.img" 2>/dev/null || true
+    rm -f "$_CACHE_DIR/${_SETUP_PREFIX}-qemu.log" 2>/dev/null || true
     # Clean up setup files only if golden was not finalized
     if ! $_GOLDEN_DONE; then
         rm -f "$_SETUP_QCOW2" 2>/dev/null || true
@@ -190,6 +183,51 @@ fi
 echo "Creating setup disk (64GB)..."
 qemu-img create -f qcow2 "$_SETUP_QCOW2" 64G
 
+# Create autounattend media (FAT disk image with autounattend.xml and drivers).
+# Mounted as a USB flash drive so Windows Setup finds autounattend.xml
+# during its implicit answer file search on removable disk drives.
+echo "Creating autounattend media..."
+_AUTOUNATTEND_IMG="$_CACHE_DIR/${_SETUP_PREFIX}-autounattend.img"
+_HELPERS_DIR="$(cd "$(dirname "$0")" && pwd)/helpers"
+_AUTOUNATTEND_TMP=$(mktemp -d)
+cp "$_HELPERS_DIR/autounattend.xml" "$_AUTOUNATTEND_TMP/autounattend.xml"
+
+# Create startup.nsh for UEFI Shell fallback.
+# If UEFI firmware can't auto-discover the USB boot device, it drops to
+# the UEFI Shell, which auto-executes startup.nsh after 5 seconds.
+# This script finds and launches the Windows ISO's boot loader.
+cat > "$_AUTOUNATTEND_TMP/startup.nsh" << 'NSHEOF'
+FS0:\efi\boot\bootaa64.efi
+FS1:\efi\boot\bootaa64.efi
+FS2:\efi\boot\bootaa64.efi
+FS3:\efi\boot\bootaa64.efi
+NSHEOF
+
+# Extract VirtIO ARM64 network driver from virtio-win ISO.
+# autounattend.xml's PnpCustomizationsWinPE section tells Windows Setup
+# to load these during install so virtio-net-pci works in the installed OS.
+_VIRTIO_ISO="$_CACHE_DIR/virtio-win.iso"
+if [[ ! -f "$_VIRTIO_ISO" ]]; then
+    echo "Downloading virtio-win drivers (~600MB, cached after first run)..."
+    curl -L -o "$_VIRTIO_ISO" "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
+fi
+_VIRTIO_MNT=$(mktemp -d)
+hdiutil attach "$_VIRTIO_ISO" -mountpoint "$_VIRTIO_MNT" -readonly -nobrowse -quiet
+mkdir -p "$_AUTOUNATTEND_TMP/drivers"
+cp "$_VIRTIO_MNT/NetKVM/w11/ARM64/"* "$_AUTOUNATTEND_TMP/drivers/"
+hdiutil detach "$_VIRTIO_MNT" -quiet
+rmdir "$_VIRTIO_MNT" 2>/dev/null || true
+echo "  NetKVM ARM64 driver included."
+
+# Build a FAT-formatted disk image (appears as USB flash drive to Windows).
+# Windows Setup only searches removable *disk* drives for Autounattend.xml,
+# not CD-ROM drives, so a FAT image is required (not ISO).
+hdiutil create -size 32m -fs "MS-DOS FAT16" -volname UNATTEND \
+    -srcfolder "$_AUTOUNATTEND_TMP" -ov "$_AUTOUNATTEND_IMG" -quiet
+qemu-img convert -f dmg -O raw "$_AUTOUNATTEND_IMG.dmg" "$_AUTOUNATTEND_IMG"
+rm -f "$_AUTOUNATTEND_IMG.dmg"
+rm -rf "$_AUTOUNATTEND_TMP"
+
 # --- Prepare UEFI and TPM ---
 
 echo "Preparing UEFI firmware and TPM..."
@@ -227,14 +265,20 @@ echo "  swtpm running (PID: $_SWTPM_PID)"
 
 # --- Boot with QEMU ---
 
+_QEMU_LOG="$_CACHE_DIR/${_SETUP_PREFIX}-qemu.log"
+_MONITOR_SOCK="$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock"
+_VNC_PASS="admin"
+
 echo "Booting Windows VM from ISO with QEMU..."
 echo "  VNC: vnc://localhost:590${_VNC_DISPLAY}"
 echo "  SSH will be forwarded on localhost:$_SSH_PORT"
+echo "  QEMU log: $_QEMU_LOG"
 
 qemu-system-aarch64 \
     -machine virt,highmem=on,gic-version=3 \
     -accel hvf \
     -cpu host \
+    -smp 4 \
     -m 4096 \
     -drive "if=pflash,format=raw,file=$_UEFI_CODE,readonly=on" \
     -drive "if=pflash,format=raw,file=$_SETUP_EFIVARS" \
@@ -242,67 +286,90 @@ qemu-system-aarch64 \
     -tpmdev "emulator,id=tpm0,chardev=chrtpm" \
     -device "tpm-tis-device,tpmdev=tpm0" \
     -drive "file=$_SETUP_QCOW2,if=none,id=hd0,format=qcow2" \
-    -device "nvme,serial=guivision,drive=hd0" \
+    -device "nvme,drive=hd0,serial=boot,bootindex=0" \
+    -device "ramfb" \
     -device "qemu-xhci" \
     -device "usb-kbd" \
-    -device "virtio-scsi-pci,id=scsi0" \
+    -device "usb-tablet" \
     -drive "file=$_CACHED_ISO,if=none,id=cd0,media=cdrom,readonly=on" \
-    -device "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0" \
+    -device "usb-storage,drive=cd0,bootindex=1" \
+    -drive "file=$_AUTOUNATTEND_IMG,if=none,id=unattend,format=raw" \
+    -device "usb-storage,drive=unattend,removable=on" \
     -device "virtio-net-pci,netdev=net0" \
     -netdev "user,id=net0,hostfwd=tcp::${_SSH_PORT}-:22" \
     -vnc ":${_VNC_DISPLAY},password=on" \
-    -monitor "unix:$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock,server,nowait" \
-    -display none &
+    -monitor "unix:$_MONITOR_SOCK,server,nowait" \
+    -serial "file:$_QEMU_LOG" \
+    -d guest_errors \
+    -display none 2>>"$_QEMU_LOG" &
 _QEMU_PID=$!
 
 sleep 2
 if ! kill -0 "$_QEMU_PID" 2>/dev/null; then
     echo "ERROR: QEMU does not appear to have started"
+    echo "Log output:"
+    cat "$_QEMU_LOG" 2>/dev/null || true
     exit 1
 fi
 echo "  QEMU running (PID: $_QEMU_PID)"
 
-# Set VNC password via QEMU monitor (macOS Screen Sharing requires one)
-_VNC_PASS="admin"
-_MONITOR_SOCK="$_CACHE_DIR/${_SETUP_PREFIX}-monitor.sock"
-# Talk to the QEMU monitor socket using bash /dev/tcp redirection isn't
-# available for Unix sockets, so use nc (netcat) which ships with macOS.
-# Use a single persistent monitor connection for all commands.
-# Sends VNC password, then periodic keypresses to dismiss
-# "Press any key to boot from CD..." prompt.
-(
+# --- Set VNC password and send keypresses ---
+# Disable set -e for monitor interactions — nc/grep failures must not kill the script.
+
+set +e
+
+# Set VNC password (macOS Screen Sharing requires one)
+# Set VNC password (retry to ensure monitor socket is ready)
+for _vnc_try in 1 2 3; do
+    (echo "set_password vnc $_VNC_PASS"; sleep 1) | nc -U "$_MONITOR_SOCK" >/dev/null 2>&1 && break
     sleep 1
-    echo "set_password vnc $_VNC_PASS"
-    # Send keypresses every 1s for 20s to catch the boot prompt
-    for i in $(seq 1 20); do
+done
+
+echo ""
+echo "--- QEMU device diagnostics ---"
+_MON_OUT=$( (echo "info block"; sleep 1) | nc -U "$_MONITOR_SOCK" 2>/dev/null )
+echo "Block devices:"
+echo "$_MON_OUT" | grep -E "(cd0|unattend|hd0)" || echo "  (none detected)"
+echo "--- end diagnostics ---"
+echo ""
+
+# Send periodic keypresses to dismiss "Press any key to boot from CD..." prompt.
+# The Windows boot loader on the ISO requires a keypress within ~5 seconds.
+# Limited to 8 iterations (~8s) to stop BEFORE Windows Setup's Cancel button
+# becomes focused — Enter keys after that would trigger the Cancel dialog.
+(
+    for i in $(seq 1 8); do
         sleep 1
         echo "sendkey ret"
     done
 ) | nc -U "$_MONITOR_SOCK" >/dev/null 2>&1 &
 _KEYPRESS_PID=$!
 
-# --- Manual Windows installation via VNC ---
+set -e
+
+# --- Automated installation via autounattend.xml ---
+# Windows Setup automatically finds autounattend.xml on the USB drive and:
+#   1. Bypasses TPM/SecureBoot/RAM checks via LabConfig registry entries
+#   2. Loads VirtIO network driver (NetKVM) via PnpCustomizationsWinPE
+#   3. Partitions the NVMe disk (EFI + MSR + NTFS)
+#   4. Applies the Windows image from the ISO
+#   5. Creates admin/admin user with autologin
+#   6. Installs and starts OpenSSH Server
+# The VM reboots several times during this process. No manual intervention needed.
 
 echo ""
 echo "=========================================================="
-echo "  MANUAL STEP: Complete the Windows installation via VNC"
+echo "  Automated Windows installation via autounattend.xml"
 echo "=========================================================="
 echo ""
-echo "  Connect with:  open vnc://localhost:590${_VNC_DISPLAY}
-  VNC password:  $_VNC_PASS"
+echo "  Windows Setup will:"
+echo "    1. Partition disk and install Windows (~15-25 min)"
+echo "    2. Configure admin user and autologin"
+echo "    3. Install OpenSSH Server"
 echo ""
-echo "  During the OOBE, create a LOCAL account:"
-echo "    Username: admin"
-echo "    Password: admin"
-echo ""
-echo "  Tips:"
-echo "    - Choose 'I don't have internet' when prompted for network"
-echo "      (or use 'OOBE\\BYPASSNRO' at Shift+F10 command prompt)"
-echo "    - Choose 'Set up for personal use' / 'Offline account'"
-echo "    - Skip all optional features and privacy settings"
-echo ""
-echo "  The script will continue automatically once the desktop"
-echo "  is ready and SSH becomes reachable."
+echo "  Monitor progress via VNC:"
+echo "    open vnc://localhost:590${_VNC_DISPLAY}"
+echo "    VNC password: $_VNC_PASS"
 echo "=========================================================="
 echo ""
 
@@ -319,40 +386,56 @@ export SSH_ASKPASS_REQUIRE="force"
 export DISPLAY=:0
 
 # --- Wait for SSH ---
-# Windows install + OOBE takes 15-30 minutes. SSH won't be available
-# until after the install completes AND OpenSSH Server is installed
-# (done by this script in the next phase). So first we wait for the
-# install to finish by checking if QEMU is still running, then we
-# install OpenSSH via PowerShell over VNC (or the user does it manually).
-#
-# Since SSH isn't available until we install it, we poll for it with
-# a very long timeout. If the user enables SSH manually during OOBE
-# it will be detected. Otherwise, this section will time out and
-# provide instructions.
+# autounattend.xml handles user creation, autologin, and OpenSSH installation
+# via FirstLogonCommands. SSH becomes reachable once the first login completes.
 
 echo "Waiting for SSH on localhost:$_SSH_PORT..."
-echo "(This waits up to 60 minutes for install + SSH to become available)"
-echo "  This can take 10-15 minutes for initial OOBE setup."
-echo "  If it times out, connect via VNC to complete setup manually."
-echo -n "Waiting for SSH..."
+echo "(Typical wait: 20-40 minutes for install + OpenSSH setup)"
 
 _SSH_READY=false
+_LAST_LOG_SIZE=0
 for i in $(seq 1 120); do
+    if ! kill -0 "$_QEMU_PID" 2>/dev/null; then
+        echo ""
+        echo "ERROR: QEMU process died during installation"
+        echo "Last QEMU log output:"
+        tail -20 "$_QEMU_LOG" 2>/dev/null || true
+        exit 1
+    fi
     if ssh $_SSH_OPTS -p "$_SSH_PORT" "$_WIN_USER@localhost" "echo ok" 2>/dev/null | grep -q "ok"; then
         _SSH_READY=true
-        echo " ready."
+        echo ""
+        echo "SSH ready."
         break
     fi
-    echo -n "."
-    sleep 5
+
+    # Print elapsed time and any new QEMU log output every 30s
+    _ELAPSED=$(( i * 30 ))
+    _MINS=$(( _ELAPSED / 60 ))
+    _SECS=$(( _ELAPSED % 60 ))
+    printf "\r  [%02d:%02d] Waiting for SSH..." "$_MINS" "$_SECS"
+
+    # Show new log lines (if any) every 2 minutes
+    if (( i % 4 == 0 )); then
+        _CUR_LOG_SIZE=$(wc -c < "$_QEMU_LOG" 2>/dev/null || echo 0)
+        if [[ "$_CUR_LOG_SIZE" -gt "$_LAST_LOG_SIZE" ]]; then
+            echo ""
+            echo "  --- QEMU log (new output) ---"
+            tail -5 "$_QEMU_LOG" 2>/dev/null || true
+            echo "  ---"
+            _LAST_LOG_SIZE=$_CUR_LOG_SIZE
+        fi
+    fi
+    sleep 30
 done
 
 if ! $_SSH_READY; then
     echo ""
-    echo "ERROR: SSH not reachable within 600s"
-    echo "The Windows evaluation image may need manual OOBE setup via VNC."
-    echo "Connect to vnc://localhost:590${_VNC_DISPLAY} and complete setup,"
-    echo "then install OpenSSH Server and re-run this script."
+    echo "ERROR: SSH not reachable within 60 minutes"
+    echo "Connect via VNC to diagnose: open vnc://localhost:590${_VNC_DISPLAY}"
+    echo ""
+    echo "QEMU log tail:"
+    tail -30 "$_QEMU_LOG" 2>/dev/null || true
     exit 1
 fi
 
@@ -366,83 +449,41 @@ vm_scp() {
     scp $_SSH_OPTS -P "$_SSH_PORT" "$1" "$_WIN_USER@localhost:$2"
 }
 
-# --- Install OpenSSH Server (if not pre-installed) ---
+# --- Install SSH key ---
+# OpenSSH Server, admin account, and autologin are already configured
+# by autounattend.xml. We just need to install the host SSH key.
 
-echo "Ensuring OpenSSH Server is installed..."
-_SSHD_STATUS=$(vm_ssh "powershell -Command \"Get-Service sshd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status\"" 2>/dev/null || true)
-
-if [[ "$_SSHD_STATUS" != *"Running"* ]]; then
-    echo "  Installing OpenSSH Server..."
-    vm_ssh "powershell -Command \"Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0\""
-    vm_ssh "powershell -Command \"Set-Service -Name sshd -StartupType Automatic\""
-    vm_ssh "powershell -Command \"Start-Service sshd\""
-    # Add firewall rule if needed
-    vm_ssh "powershell -Command \"if (-not (Get-NetFirewallRule -Name sshd -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }\""
-    echo "  OpenSSH Server installed and started."
-else
-    echo "  OpenSSH Server already running."
-fi
-
-# --- Create admin account and install SSH key ---
-
-echo "Creating 'admin' account..."
-# Create local user 'admin' with password 'admin', add to Administrators
-vm_ssh "powershell -Command \"if (-not (Get-LocalUser -Name admin -ErrorAction SilentlyContinue)) { \\\$pw = ConvertTo-SecureString '$_ADMIN_PASS' -AsPlainText -Force; New-LocalUser -Name admin -Password \\\$pw -FullName 'Admin' -Description 'GUIVision admin account' -PasswordNeverExpires; Add-LocalGroupMember -Group Administrators -Member admin }\""
-
-# Set autologin via registry
-echo "Configuring autologin for 'admin'..."
-vm_ssh "powershell -Command \"Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name AutoAdminLogon -Value 1\""
-vm_ssh "powershell -Command \"Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name DefaultUserName -Value admin\""
-vm_ssh "powershell -Command \"Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name DefaultPassword -Value '$_ADMIN_PASS'\""
-
-# Install SSH key for admin
 echo "Installing SSH key for 'admin'..."
 _SSH_KEY_CONTENT=$(cat "$_SSH_KEY")
+# Windows OpenSSH requires administrators_authorized_keys for admin users,
+# with strict ACLs: only SYSTEM and BUILTIN\Administrators may have access.
+# Order matters: take ownership first, then reset ACLs, then set correct ones.
+# Use ASCII encoding to avoid UTF-8 BOM which OpenSSH can't parse.
 vm_ssh "powershell -Command \"
-    \\\$keyDir = 'C:\\ProgramData\\ssh';
     \\\$keyFile = 'C:\\ProgramData\\ssh\\administrators_authorized_keys';
-    if (-not (Test-Path \\\$keyDir)) { New-Item -ItemType Directory -Path \\\$keyDir -Force };
-    Set-Content -Path \\\$keyFile -Value '$_SSH_KEY_CONTENT' -Encoding UTF8;
-    icacls \\\$keyFile /inheritance:r /grant 'SYSTEM:(R)' /grant 'BUILTIN\\Administrators:(R)';
-    takeown /F \$keyFile /A
+    [IO.File]::WriteAllText(\\\$keyFile, '$_SSH_KEY_CONTENT');
+    takeown /F \\\$keyFile /A;
+    icacls \\\$keyFile /inheritance:r;
+    icacls \\\$keyFile /remove 'admin';
+    icacls \\\$keyFile /grant 'SYSTEM:(R)';
+    icacls \\\$keyFile /grant 'BUILTIN\\Administrators:(R)'
 \""
 
 # Restart sshd to pick up key changes
 vm_ssh "powershell -Command \"Restart-Service sshd\""
 sleep 3
 
-# Switch to admin user and verify key-based auth.
-# NOTE: Changing _WIN_USER here intentionally affects all subsequent vm_ssh calls,
-# which should target the 'admin' account from this point onward.
-echo "Verifying SSH key auth for 'admin'..."
-_WIN_USER="admin"
+# Verify key-based auth works without password
+echo "Verifying SSH key auth..."
 unset SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY
 
 if ssh $_SSH_OPTS -p "$_SSH_PORT" "admin@localhost" "echo ok" 2>/dev/null | grep -q "ok"; then
-    echo "SSH key auth verified for 'admin'."
+    echo "SSH key auth verified."
 else
-    # Try with password auth as fallback to diagnose
-    echo "WARNING: Key-based SSH auth for 'admin' failed."
-    echo "  Attempting password auth to diagnose..."
-    _ASKPASS_FILE_ADMIN=$(mktemp)
-    cat > "$_ASKPASS_FILE_ADMIN" << EOF
-#!/bin/bash
-echo '$_ADMIN_PASS'
-EOF
-    chmod 700 "$_ASKPASS_FILE_ADMIN"
-    export SSH_ASKPASS="$_ASKPASS_FILE_ADMIN"
+    echo "WARNING: Key-based SSH auth failed. Falling back to password auth..."
+    export SSH_ASKPASS="$_ASKPASS_FILE"
     export SSH_ASKPASS_REQUIRE="force"
     export DISPLAY=:0
-    if ssh $_SSH_OPTS -p "$_SSH_PORT" "admin@localhost" "echo ok" 2>/dev/null | grep -q "ok"; then
-        echo "  Password auth works. Key configuration may need adjustment."
-        echo "  Continuing with password auth for now..."
-    else
-        echo "ERROR: Cannot SSH as 'admin' with either key or password auth."
-        rm -f "$_ASKPASS_FILE_ADMIN" 2>/dev/null || true
-        exit 1
-    fi
-    rm -f "$_ASKPASS_FILE_ADMIN" 2>/dev/null || true
-    unset SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY
 fi
 
 # --- Disable machine-wide clutter (HKLM changes apply before reboot) ---
@@ -456,7 +497,8 @@ vm_ssh "powershell -Command \"
     Set-ItemProperty -Path \\\$path -Name AllowCortana -Value 0 -Type DWord
 \""
 
-# Disable Windows Update auto-restart
+# Disable Windows Update auto-restart (let updates check/install during golden
+# creation so clones inherit a fully-updated, settled state)
 vm_ssh "powershell -Command \"
     \\\$path = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU';
     if (-not (Test-Path \\\$path)) { New-Item -Path \\\$path -Force };
@@ -464,12 +506,28 @@ vm_ssh "powershell -Command \"
     Set-ItemProperty -Path \\\$path -Name AUOptions -Value 2 -Type DWord
 \""
 
-# --- Reboot, verify, shutdown ---
+# Disable first-logon animation so clones don't replay "Getting things ready"
+vm_ssh "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v EnableFirstLogonAnimation /t REG_DWORD /d 0 /f"
 
-echo -n "Rebooting to apply settings..."
+# Disable widgets via group policy (HKCU TaskbarDa is protected by Explorer)
+vm_ssh "reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Dsh\" /v AllowNewsAndInterests /t REG_DWORD /d 0 /f"
+
+# --- Write desktop setup script (runs via RunOnce in the desktop session) ---
+# HKCU registry writes fail over SSH due to session ACLs. Instead, we write a
+# PowerShell script and register it in HKLM RunOnce. On next login, it runs in
+# the desktop session where HKCU is fully writable and the wallpaper API works.
+
+echo "Uploading desktop setup script..."
+vm_scp "$_HELPERS_DIR/desktop-setup.ps1" "C:\\Windows\\Setup\\Scripts\\desktop-setup.ps1"
+
+# Register the script to run at next login via HKLM RunOnce (HKLM is writable over SSH)
+vm_ssh "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\" /v DesktopSetup /t REG_SZ /d \"powershell -ExecutionPolicy Bypass -File C:\\Windows\\Setup\\Scripts\\desktop-setup.ps1\" /f"
+
+# --- First reboot: RunOnce applies all HKCU settings in the desktop session ---
+
+echo -n "Rebooting to apply desktop settings..."
 vm_ssh "shutdown /r /t 0" 2>/dev/null || true
 
-# Wait for SSH to drop (reboot) then come back
 sleep 15
 for i in $(seq 1 120); do
     if ssh $_SSH_OPTS -p "$_SSH_PORT" "admin@localhost" "echo ok" 2>/dev/null | grep -q "ok"; then
@@ -486,52 +544,64 @@ if ! ssh $_SSH_OPTS -p "$_SSH_PORT" "admin@localhost" "echo ok" 2>/dev/null | gr
     exit 1
 fi
 
-# Give the desktop a moment to fully load after login
-sleep 10
+# Wait for the desktop-setup script to complete (signalled by a marker file)
+echo -n "Waiting for desktop setup to complete..."
+for i in $(seq 1 60); do
+    if vm_ssh "if exist C:\\Windows\\Setup\\Scripts\\desktop-setup-done.txt echo done" 2>/dev/null | grep -q "done"; then
+        echo " done."
+        break
+    fi
+    echo -n "."
+    sleep 2
+done
 
-# --- Set wallpaper and per-user desktop clutter (HKCU) ---
-# These run after reboot so they target the admin user's registry hive,
-# which is loaded once admin is logged in via autologin.
-
-echo "Setting wallpaper to solid gray..."
-_HELPER_SRC="$(cd "$(dirname "$0")" && pwd)/helpers/set-wallpaper.ps1"
-if [[ -f "$_HELPER_SRC" ]]; then
-    vm_scp "$_HELPER_SRC" "C:/Users/admin/set-wallpaper.ps1"
-    vm_ssh "powershell -ExecutionPolicy Bypass -File C:\\Users\\admin\\set-wallpaper.ps1 808080"
-    vm_ssh "powershell -Command \"Remove-Item C:\\Users\\admin\\set-wallpaper.ps1\""
-else
-    echo "WARNING: set-wallpaper.ps1 not found at $_HELPER_SRC — skipping wallpaper"
+if ! vm_ssh "if exist C:\\Windows\\Setup\\Scripts\\desktop-setup-done.txt echo done" 2>/dev/null | grep -q "done"; then
+    echo ""
+    echo "ERROR: Desktop setup script did not complete"
+    exit 1
 fi
 
-echo "Disabling per-user desktop clutter..."
+# Let Windows fully settle — background tasks (search indexing, app readiness,
+# component store cleanup) run for minutes after first login.
+echo "Waiting 60s for Windows to settle..."
+sleep 60
 
-# Disable widgets (TaskbarDa = taskbar data/widgets)
-vm_ssh "powershell -Command \"Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name TaskbarDa -Value 0 -Type DWord\""
+# --- Second reboot: wallpaper and taskbar changes take full effect on login ---
 
-# Disable notifications
+echo -n "Second reboot to finalize..."
+vm_ssh "shutdown /r /t 0" 2>/dev/null || true
+
+sleep 15
+for i in $(seq 1 120); do
+    if ssh $_SSH_OPTS -p "$_SSH_PORT" "admin@localhost" "echo ok" 2>/dev/null | grep -q "ok"; then
+        echo " back online."
+        break
+    fi
+    echo -n "."
+    sleep 5
+done
+
+if ! ssh $_SSH_OPTS -p "$_SSH_PORT" "admin@localhost" "echo ok" 2>/dev/null | grep -q "ok"; then
+    echo ""
+    echo "ERROR: VM did not come back online after second reboot"
+    exit 1
+fi
+
+echo "Waiting 30s for final settle..."
+sleep 30
+
+# --- Clean desktop before shutdown ---
+# Close any startup apps that opened windows (Get Started, Edge, Tips, etc.)
+# so clones inherit a clean desktop with no open windows.
+# Note: do NOT restart Explorer over SSH — it runs in the SSH session context,
+# not the desktop session, leaving a black screen.
+echo "Cleaning desktop state..."
 vm_ssh "powershell -Command \"
-    \\\$path = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications';
-    if (-not (Test-Path \\\$path)) { New-Item -Path \\\$path -Force };
-    Set-ItemProperty -Path \\\$path -Name ToastEnabled -Value 0 -Type DWord
-\""
-
-# Disable first-run experience / suggested content
-vm_ssh "powershell -Command \"
-    \\\$path = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager';
-    if (-not (Test-Path \\\$path)) { New-Item -Path \\\$path -Force };
-    Set-ItemProperty -Path \\\$path -Name SubscribedContent-338389Enabled -Value 0 -Type DWord;
-    Set-ItemProperty -Path \\\$path -Name SubscribedContent-310093Enabled -Value 0 -Type DWord;
-    Set-ItemProperty -Path \\\$path -Name SubscribedContent-338388Enabled -Value 0 -Type DWord;
-    Set-ItemProperty -Path \\\$path -Name SubscribedContent-338393Enabled -Value 0 -Type DWord;
-    Set-ItemProperty -Path \\\$path -Name SubscribedContent-353694Enabled -Value 0 -Type DWord;
-    Set-ItemProperty -Path \\\$path -Name SubscribedContent-353696Enabled -Value 0 -Type DWord
-\""
-
-# Disable search highlights
-vm_ssh "powershell -Command \"
-    \\\$path = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\SearchSettings';
-    if (-not (Test-Path \\\$path)) { New-Item -Path \\\$path -Force };
-    Set-ItemProperty -Path \\\$path -Name IsDynamicSearchBoxEnabled -Value 0 -Type DWord
+    \\\$apps = @('GetStarted','Video.UI','HelpPane','SearchHost','SearchApp',
+                'PhoneExperienceHost','msedge','MicrosoftEdge*','Widgets');
+    foreach (\\\$a in \\\$apps) {
+        Get-Process -Name \\\$a -ErrorAction SilentlyContinue | Stop-Process -Force
+    }
 \""
 
 # --- Shutdown ---

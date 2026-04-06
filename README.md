@@ -159,8 +159,8 @@ scripts/vm-create-golden-windows.sh --iso ~/Downloads/Win11_ARM64.iso
 ```
 
 The ISO is cached after first use — subsequent runs don't need `--iso`.
-The Windows installation requires a manual step via VNC during setup
-(the script prints instructions and waits).
+The Windows installation is fully automated via `autounattend.xml`
+(typical time: 20-40 minutes).
 
 ### Running tests
 
@@ -178,7 +178,9 @@ scripts/test-integration.sh --keep
 ### Interactive use
 
 ```bash
-source scripts/vm-start.sh --viewer
+source scripts/vm-start.sh --viewer                     # macOS (default)
+source scripts/vm-start.sh --platform linux --viewer     # Linux
+source scripts/vm-start.sh --platform windows --viewer   # Windows
 swift test --filter IntegrationTests
 # ... edit code, re-run tests ...
 source scripts/vm-stop.sh
@@ -203,7 +205,7 @@ swift test
 
 ## Golden Image Contents
 
-The macOS golden image (`guivision-golden-macos-tahoe`) includes:
+### macOS (`guivision-golden-macos-tahoe`)
 
 - **macOS Tahoe** (Apple Silicon, via Cirrus Labs vanilla image)
 - **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin`
@@ -216,11 +218,34 @@ The macOS golden image (`guivision-golden-macos-tahoe`) includes:
 - **Session restore disabled** — apps don't reopen old windows
 - **SIP enabled** — standard security posture (SIP is temporarily disabled during image creation to write the TCC grant, then re-enabled)
 
+### Linux (`guivision-golden-linux-24.04`)
+
+- **Ubuntu 24.04 Desktop** (ARM64, via Cirrus Labs vanilla image + `ubuntu-desktop-minimal`)
+- **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin`
+- **GDM autologin** — boots directly to desktop as `admin`
+- **Silent boot** — GRUB hidden, Plymouth splash, no text-mode console output
+- **Solid gray wallpaper** — clean background for screenshot analysis
+- **Screen lock and blanking disabled** — no interruptions during tests
+- **Notifications disabled** — no visual clutter
+- **NetworkManager** — configured via netplan (replaces systemd-networkd from base image)
+
+### Windows (`guivision-golden-windows-11`)
+
+- **Windows 11 Pro** (ARM64, installed from Microsoft evaluation ISO via QEMU)
+- **SSH key auth** — OpenSSH Server with key in `administrators_authorized_keys`, user `admin`/`admin`
+- **Autologin** — boots directly to desktop as `admin`
+- **Solid gray wallpaper** — applied via Win32 API in desktop session
+- **Widgets, search box, notifications disabled** — clean taskbar for vision pipeline
+- **First-logon animation disabled** — clones boot straight to desktop without OOBE
+- **UEFI + TPM 2.0** — standard Windows 11 secure boot via swtpm
+- **VirtIO networking** — virtio-net-pci driver installed during setup
+
 ## Requirements
 
 - macOS 14+
 - Swift 6.0
-- [tart](https://tart.run) (for integration tests only)
+- [tart](https://tart.run) — for macOS and Linux VMs
+- [QEMU](https://www.qemu.org/) + [swtpm](https://github.com/stefanberger/swtpm) — for Windows VMs (`brew install qemu swtpm`)
 - SSH public key at `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` (for golden image creation)
 
 ## LLM Integration

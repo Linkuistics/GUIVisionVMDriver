@@ -204,41 +204,38 @@ vm_ssh "sudo rm -f /etc/apt/preferences.d/no-firefox"
 vm_ssh "sudo rm -f /usr/bin/systemctl && sudo dpkg-divert --local --rename --remove /usr/bin/systemctl"
 vm_ssh "sudo rm -f /usr/sbin/policy-rc.d"
 
+# Stop unattended-upgrades immediately — it starts as soon as systemctl is
+# restored and grabs the dpkg lock, blocking subsequent apt operations.
+vm_ssh "sudo systemctl stop unattended-upgrades.service 2>/dev/null || true"
+vm_ssh "sudo killall unattended-upgr 2>/dev/null || true"
+# Wait for the dpkg lock to be released
+vm_ssh "while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 1; done"
+
 echo "  Ubuntu Desktop installed."
 
-# --- Configure NetworkManager ---
-# The base Cirrus Labs image uses systemd-networkd, but ubuntu-desktop-minimal
-# installs NetworkManager which takes over. Without config, NM won't manage
-# the VM's network interface after reboot, leaving it with no IP address.
-echo "Configuring NetworkManager..."
-vm_ssh "sudo tee /etc/NetworkManager/conf.d/10-manage-all.conf > /dev/null << 'NMCONF'
-[device]
-wifi.scan-rand-mac-address=no
+# --- Switch networking from systemd-networkd to NetworkManager ---
+# The base Cirrus Labs image uses systemd-networkd via netplan. Ubuntu Desktop
+# installs NetworkManager. We must tell netplan to use NM as the renderer,
+# otherwise netplan generates networkd config on boot and NM has nothing to manage.
+echo "Configuring NetworkManager via netplan..."
 
-[main]
-plugins=ifupdown,keyfile
+# Remove existing netplan configs (typically 50-cloud-init.yaml or similar
+# that specify renderer: networkd)
+vm_ssh "sudo rm -f /etc/netplan/*.yaml"
 
-[ifupdown]
-managed=true
-NMCONF"
-
-# Tell NM to manage all unmanaged devices via DHCP
-vm_ssh "sudo tee /etc/NetworkManager/system-connections/wired.nmconnection > /dev/null << 'NMCONN'
-[connection]
-id=Wired
-type=ethernet
-autoconnect=true
-
-[ipv4]
-method=auto
-
-[ipv6]
-method=auto
-NMCONN"
-vm_ssh "sudo chmod 600 /etc/NetworkManager/system-connections/wired.nmconnection"
+# Create a single netplan config that delegates everything to NetworkManager
+vm_ssh "sudo tee /etc/netplan/01-network-manager-all.yaml > /dev/null << 'NETPLAN'
+network:
+  version: 2
+  renderer: NetworkManager
+NETPLAN"
+vm_ssh "sudo chmod 600 /etc/netplan/01-network-manager-all.yaml"
 
 # Disable systemd-networkd so it doesn't conflict with NetworkManager
-vm_ssh "sudo systemctl disable systemd-networkd.service 2>/dev/null || true"
+vm_ssh "sudo systemctl disable systemd-networkd.service systemd-networkd-wait-online.service 2>/dev/null || true"
+
+# Ensure NetworkManager is enabled (may already be, but be explicit)
+vm_ssh "sudo systemctl enable NetworkManager.service 2>/dev/null || true"
 
 # Now install Firefox — snapd can run with systemctl restored
 echo "Installing Firefox (snap)..."
@@ -254,6 +251,9 @@ vm_ssh "sudo tee /etc/gdm3/custom.conf > /dev/null << 'GDMCONF'
 AutomaticLoginEnable=True
 AutomaticLogin=admin
 GDMCONF"
+
+# Skip GNOME Initial Setup wizard on first GUI login
+vm_ssh "mkdir -p ~/.config && echo 'yes' > ~/.config/gnome-initial-setup-done"
 
 # --- Set solid wallpaper and disable desktop clutter ---
 
@@ -283,6 +283,17 @@ echo "  Updates complete."
 # don't pop up during tests
 vm_ssh "sudo apt-get remove -y update-notifier 2>/dev/null || true"
 vm_ssh "sudo systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true"
+
+# --- Configure silent boot (skip text-mode, go straight to GUI) ---
+
+echo "Configuring silent boot..."
+# Remove the cloud image GRUB override — it forces console=ttyAMA0 which
+# shows text-mode boot and overrides quiet/splash from /etc/default/grub.
+vm_ssh "sudo rm -f /etc/default/grub.d/50-cloudimg-settings.cfg"
+vm_ssh "sudo sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash loglevel=0 vt.global_cursor_default=0\"/' /etc/default/grub"
+vm_ssh "sudo sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub"
+vm_ssh "grep -q '^GRUB_TIMEOUT_STYLE=' /etc/default/grub && sudo sed -i 's/^GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=hidden/' /etc/default/grub || echo 'GRUB_TIMEOUT_STYLE=hidden' | sudo tee -a /etc/default/grub > /dev/null"
+vm_ssh "sudo update-grub"
 
 # --- Reboot cycle to apply settings ---
 # tart run exits when the guest shuts down or reboots, so we:

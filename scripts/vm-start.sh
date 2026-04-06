@@ -7,7 +7,7 @@
 # Options:
 #   --platform PLATFORM  Target platform: macos|linux|windows (default: macos)
 #   --base IMAGE         Base image to clone from (default: platform-specific)
-#   --name NAME          VM name / clone identifier (default: guivision-inttest)
+#   --name NAME          VM name / clone identifier (default: guivision-default)
 #   --viewer             Open VNC viewer after boot
 #   --no-ssh             Skip waiting for SSH
 #
@@ -48,7 +48,7 @@ set -euo pipefail
 # Defaults
 _PLATFORM="macos"
 _BASE=""
-_NAME="guivision-inttest"
+_NAME="guivision-default"
 _VIEWER=false
 _SSH=true
 _SSH_USER="admin"
@@ -109,11 +109,13 @@ if [[ "$_TOOL" == "tart" ]]; then
     _PID=$!
     echo "tart PID: $_PID"
 
-    # Poll for VNC URL
+    # Poll for VNC URL.
+    # Guard grep with || true — grep returns exit 1 on no match, which
+    # would abort this sourced script via set -euo pipefail.
     echo "Waiting for VNC..."
     _VNC_URL=""
     for i in $(seq 1 60); do
-        _VNC_URL=$(grep -o 'vnc://[^ ]*' "$_VNC_OUTPUT" 2>/dev/null | head -1 | sed 's/\.\.\.$//')
+        _VNC_URL=$(grep -o 'vnc://[^ ]*' "$_VNC_OUTPUT" 2>/dev/null | head -1 | sed 's/\.\.\.$//') || true
         if [[ -n "$_VNC_URL" ]]; then
             break
         fi
@@ -147,7 +149,7 @@ if [[ "$_TOOL" == "tart" ]]; then
         echo "Waiting for VM IP..."
         _IP=""
         for i in $(seq 1 30); do
-            _IP=$(tart ip "$_NAME" 2>/dev/null | tr -d '[:space:]')
+            _IP=$(tart ip "$_NAME" 2>/dev/null | tr -d '[:space:]') || true
             if [[ -n "$_IP" ]]; then
                 break
             fi
@@ -161,7 +163,7 @@ if [[ "$_TOOL" == "tart" ]]; then
             _SSH_READY=false
             for i in $(seq 1 40); do
                 if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-                       -o LogLevel=ERROR -o ConnectTimeout=5 \
+                       -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes \
                        "$_SSH_USER@$_IP" "echo ok" &>/dev/null; then
                     _SSH_READY=true
                     break
@@ -220,7 +222,13 @@ elif [[ "$_TOOL" == "qemu" ]]; then
 
     # Stop / clean up existing clone if present
     if [[ -d "$_CLONE_DIR" ]]; then
-        echo "Removing existing clone directory '$_CLONE_DIR'..."
+        echo "Stopping existing VM '$_NAME'..."
+        # Kill any QEMU process using this clone's disk image
+        _OLD_PID=$(lsof -t "$_CLONE_DIR"/*.qcow2 2>/dev/null | head -1) || true
+        if [[ -n "$_OLD_PID" ]]; then
+            kill "$_OLD_PID" 2>/dev/null || true
+            sleep 2
+        fi
         rm -rf "$_CLONE_DIR"
     fi
 
@@ -261,11 +269,15 @@ elif [[ "$_TOOL" == "qemu" ]]; then
     sleep 1
 
     # Boot with QEMU
+    _VNC_PASS="guivision"
+    _MONITOR_SOCK="$_CLONE_DIR/monitor.sock"
+
     echo "Booting QEMU VM..."
     qemu-system-aarch64 \
         -machine virt,highmem=on,gic-version=3 \
         -accel hvf \
         -cpu host \
+        -smp 4 \
         -m 4096 \
         -drive "if=pflash,format=raw,file=$_UEFI_CODE,readonly=on" \
         -drive "if=pflash,format=raw,file=$_CLONE_EFIVARS" \
@@ -273,10 +285,15 @@ elif [[ "$_TOOL" == "qemu" ]]; then
         -tpmdev "emulator,id=tpm0,chardev=chrtpm" \
         -device "tpm-tis-device,tpmdev=tpm0" \
         -drive "file=$_CLONE_QCOW2,if=none,id=hd0,format=qcow2" \
-        -device "nvme,serial=guivision,drive=hd0" \
+        -device "nvme,drive=hd0,serial=boot,bootindex=0" \
+        -device "ramfb" \
+        -device "qemu-xhci" \
+        -device "usb-kbd" \
+        -device "usb-tablet" \
         -device "virtio-net-pci,netdev=net0" \
         -netdev "user,id=net0,hostfwd=tcp::2222-:22" \
-        -vnc ":1" \
+        -vnc ":1,password=on" \
+        -monitor "unix:$_MONITOR_SOCK,server,nowait" \
         -display none &
     _PID=$!
     echo "qemu PID: $_PID"
@@ -288,12 +305,17 @@ elif [[ "$_TOOL" == "qemu" ]]; then
         return 1 2>/dev/null || exit 1
     fi
 
-    # VNC and SSH are known at launch — no discovery needed
+    # Set VNC password via QEMU monitor (retry until socket is ready)
+    for _try in 1 2 3; do
+        (echo "set_password vnc $_VNC_PASS"; sleep 1) | nc -U "$_MONITOR_SOCK" >/dev/null 2>&1 && break
+        sleep 1
+    done
+
     echo "VNC: localhost:5901"
 
     # Export env vars
     export GUIVISION_VNC="localhost:5901"
-    unset GUIVISION_VNC_PASSWORD 2>/dev/null || true
+    export GUIVISION_VNC_PASSWORD="$_VNC_PASS"
     export GUIVISION_PLATFORM="$_PLATFORM"
     export GUIVISION_VM_NAME="$_NAME"
     export GUIVISION_VM_PID="$_PID"
@@ -302,6 +324,18 @@ elif [[ "$_TOOL" == "qemu" ]]; then
 
     # Wait for SSH if requested
     if $_SSH; then
+        # Set up SSH_ASKPASS so password auth works non-interactively.
+        # SSH tries key auth first; SSH_ASKPASS is only used as fallback.
+        _ASKPASS_FILE=$(mktemp)
+        cat > "$_ASKPASS_FILE" << 'EOF'
+#!/bin/bash
+echo 'admin'
+EOF
+        chmod 700 "$_ASKPASS_FILE"
+        export SSH_ASKPASS="$_ASKPASS_FILE"
+        export SSH_ASKPASS_REQUIRE="force"
+        export DISPLAY=:0
+
         echo "Waiting for SSH at $_SSH_USER@localhost (port 2222)..."
         _SSH_READY=false
         for i in $(seq 1 80); do
@@ -314,6 +348,9 @@ elif [[ "$_TOOL" == "qemu" ]]; then
             sleep 5
         done
 
+        rm -f "$_ASKPASS_FILE"
+        unset SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY
+
         if $_SSH_READY; then
             export GUIVISION_SSH="$_SSH_USER@localhost -p 2222"
             echo "SSH: $_SSH_USER@localhost -p 2222"
@@ -322,10 +359,19 @@ elif [[ "$_TOOL" == "qemu" ]]; then
         fi
     fi
 
-    # Open VNC viewer if requested (no password for QEMU default VNC)
+    # Open VNC viewer if requested
     if $_VIEWER; then
         echo "Opening VNC viewer..."
-        open "vnc://localhost:5901"
+        open "vnc://:${_VNC_PASS}@localhost:5901"
+
+        # Auto-type the VNC password via AppleScript
+        sleep 2
+        osascript -e "
+            tell application \"System Events\"
+                keystroke \"$_VNC_PASS\"
+                keystroke return
+            end tell
+        " 2>/dev/null || echo "(Could not auto-type VNC password)"
 
         # Record the AXIdentifier of the new window so vm-stop.sh can close
         # exactly this window without affecting other Screen Sharing sessions.
