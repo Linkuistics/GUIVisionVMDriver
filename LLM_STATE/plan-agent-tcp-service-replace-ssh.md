@@ -201,11 +201,18 @@ This session does two parallel tracks: simplifying the host library and converti
 
 ### Code Review 2
 
-- [ ] 2.R Review Session 2 changes
-  - Verify launchd plist is correct (ProcessType, resource limits, crash recovery)
-  - Verify agent TCC accessibility works when launched via launchd (proven: snapshot returns windows)
-  - Verify vm-start.sh handles agent-not-available gracefully for platforms without golden images yet
-  - Verify resolveAgent() works with --agent only (no --vnc required)
+- [x] 2.R Review Session 2 changes
+  - Verify launchd plist is correct (ProcessType, resource limits, crash recovery) ✓
+  - Verify agent TCC accessibility works when launched via launchd (proven: snapshot returns windows) ✓
+  - Verify vm-start.sh handles agent-not-available gracefully for platforms without golden images yet ✓
+  - Verify resolveAgent() works with --agent only (no --vnc required) ✓
+  - Fixed: `_IP` unbound variable in vm-start.sh when `--no-ssh` — moved `tart ip` out of SSH block so agent detection works independently
+  - Fixed: `_stop_vm_graceful()` used `sudo shutdown -h now` — changed to System Events for consistency with final shutdown
+  - Fixed: `vm-create-golden-macos.sh` used `set -eu` without `pipefail` — added to catch silent pipeline failures
+  - Fixed: `_GUIVISION_BIN` scope leak in `install_agent()` — declared at script top as explicit global
+  - Fixed: `resolveAgent()` confusing error — falls through to agent-specific message instead of leaking `--vnc` error
+  - Added: timeout rationale comments in vm-start.sh (tart 120s vs QEMU 600s)
+  - Deferred: launchd resource limits — test-only infrastructure with disposable VMs, not needed
 
 ### Session 3: Windows Agent — C# TCP Service
 
@@ -423,3 +430,11 @@ This session does two parallel tracks: simplifying the host library and converti
 5. **Stale comment in GUIVisionVMDriver.swift**: Module-level comment still said "VNC + SSH driver" — updated to "VNC + Agent driver" during code review 1.
 
 6. **`resolveAgent()` required `--vnc`**: The CLI's `resolveAgent()` method called `resolve()` which required `--vnc`. Fixed to check `--agent` and `GUIVISION_AGENT` env var directly before falling back to the full connection spec. Agent-only commands now work without `--vnc`.
+
+7. **`_IP` unbound variable with `--no-ssh`**: In vm-start.sh (tart path), `_IP` was only initialized inside the `if $_SSH` block. With `set -u` active, `--no-ssh` would crash at the agent check `if [[ -n "$_IP" ]]`. Fixed by moving `tart ip` acquisition out of the SSH block — the agent doesn't depend on SSH, so IP detection should be unconditional.
+
+8. **System Events shutdown consistency**: `_stop_vm_graceful()` used `sudo shutdown -h now` while the final shutdown used System Events. Both should use System Events to prevent loginwindow from relaunching apps on next boot.
+
+9. **`resolveAgent()` error fallthrough**: The fallback path called `try resolve()` which threw about `--vnc` being required — confusing for agent-only commands. Changed to `try? resolve()` so the agent-specific error message is always shown.
+
+10. **`pipefail` for pipeline safety**: `vm-create-golden-macos.sh` had `set -eu` without `pipefail`. The `codesign | sed | csreq | xxd` pipeline for TCC could silently produce empty output if `codesign` failed. Added `pipefail`.

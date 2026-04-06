@@ -145,43 +145,44 @@ if [[ "$_TOOL" == "tart" ]]; then
     export GUIVISION_VM_PID="$_PID"
     export GUIVISION_VM_TOOL="tart"
 
+    # Get VM IP (needed for both agent and SSH)
+    echo "Waiting for VM IP..."
+    _IP=""
+    for i in $(seq 1 30); do
+        _IP=$(tart ip "$_NAME" 2>/dev/null | tr -d '[:space:]') || true
+        if [[ -n "$_IP" ]]; then
+            break
+        fi
+        sleep 2
+    done
+
+    if [[ -z "$_IP" ]]; then
+        echo "WARNING: Could not get VM IP — agent and SSH will be unavailable"
+    fi
+
     # Wait for SSH if requested
-    if $_SSH; then
-        echo "Waiting for VM IP..."
-        _IP=""
-        for i in $(seq 1 30); do
-            _IP=$(tart ip "$_NAME" 2>/dev/null | tr -d '[:space:]') || true
-            if [[ -n "$_IP" ]]; then
+    if $_SSH && [[ -n "$_IP" ]]; then
+        echo "Waiting for SSH at $_SSH_USER@$_IP..."
+        _SSH_READY=false
+        for i in $(seq 1 40); do
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                   -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes \
+                   "$_SSH_USER@$_IP" "echo ok" &>/dev/null; then
+                _SSH_READY=true
                 break
             fi
-            sleep 2
+            sleep 3
         done
 
-        if [[ -z "$_IP" ]]; then
-            echo "WARNING: Could not get VM IP — SSH tests will be skipped"
+        if $_SSH_READY; then
+            export GUIVISION_SSH="$_SSH_USER@$_IP"
+            echo "SSH: $_SSH_USER@$_IP (debug convenience)"
         else
-            echo "Waiting for SSH at $_SSH_USER@$_IP..."
-            _SSH_READY=false
-            for i in $(seq 1 40); do
-                if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-                       -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes \
-                       "$_SSH_USER@$_IP" "echo ok" &>/dev/null; then
-                    _SSH_READY=true
-                    break
-                fi
-                sleep 3
-            done
-
-            if $_SSH_READY; then
-                export GUIVISION_SSH="$_SSH_USER@$_IP"
-                echo "SSH: $_SSH_USER@$_IP (debug convenience)"
-            else
-                echo "WARNING: SSH not reachable — SSH debugging will be unavailable"
-            fi
+            echo "WARNING: SSH not reachable — SSH debugging will be unavailable"
         fi
     fi
 
-    # Wait for agent on port 8648
+    # Wait for agent on port 8648 (tart: ~120s max — macOS/Linux boot fast)
     if [[ -n "$_IP" ]]; then
         echo -n "Waiting for agent at $_IP:8648..."
         _AGENT_READY=false
@@ -344,7 +345,7 @@ elif [[ "$_TOOL" == "qemu" ]]; then
     export GUIVISION_VM_TOOL="qemu"
     export GUIVISION_VM_CLONE_DIR="$_CLONE_DIR"
 
-    # Wait for agent on port 8648 (forwarded from guest)
+    # Wait for agent on port 8648 (QEMU: ~600s max — Windows boot + OOBE is slow)
     echo -n "Waiting for agent at localhost:8648..."
     _AGENT_READY=false
     for i in $(seq 1 120); do

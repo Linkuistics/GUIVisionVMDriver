@@ -58,8 +58,7 @@ struct ConnectionOptions: ParsableArguments {
             return AgentTCPClient(spec: agentSpec)
         }
         // Fall back to the full connection spec (which may include agent)
-        let spec = try resolve()
-        if let agentSpec = spec.agent {
+        if let spec = try? resolve(), let agentSpec = spec.agent {
             return AgentTCPClient(spec: agentSpec)
         }
         throw ValidationError("Agent endpoint required: use --agent host:port or set GUIVISION_AGENT")

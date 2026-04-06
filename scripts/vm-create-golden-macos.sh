@@ -28,7 +28,7 @@
 #
 # The golden image is never run directly — clone from it for each test session.
 
-set -eu
+set -euo pipefail
 
 _VERSION="tahoe"
 _NAME=""
@@ -36,6 +36,7 @@ _VANILLA_USER="admin"
 _VANILLA_PASS="admin"
 _SETUP_VM="guivision-setup-$$"
 _SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=30"
+_GUIVISION_BIN=""  # Set by install_agent(), used by _recovery_boot_csrutil()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -295,7 +296,9 @@ install_agent() {
 # Shared helper: gracefully stop the VM and wait for the tart process to exit.
 _stop_vm_graceful() {
     echo -n "Shutting down VM..."
-    vm_ssh "sudo shutdown -h now" 2>/dev/null || true
+    # Use System Events for clean shutdown — sudo shutdown -h now kills loginwindow
+    # before it saves session state, causing apps to relaunch on next boot.
+    vm_ssh "osascript -e 'tell application \"System Events\" to shut down'" 2>/dev/null || true
     for i in $(seq 1 60); do
         if ! kill -0 "$_TART_PID" 2>/dev/null; then
             echo " done."
