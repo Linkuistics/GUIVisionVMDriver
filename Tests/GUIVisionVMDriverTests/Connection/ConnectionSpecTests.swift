@@ -34,13 +34,17 @@ struct ConnectionSpecTests {
         #expect(spec.password == "secret")
     }
 
-    // MARK: - SSHSpec
+    // MARK: - AgentSpec
 
-    @Test func sshSpecDefaults() {
-        let spec = SSHSpec(host: "myhost", user: "admin")
-        #expect(spec.port == 22)
-        #expect(spec.key == nil)
-        #expect(spec.password == nil)
+    @Test func agentSpecDefaults() {
+        let spec = AgentSpec(host: "myhost")
+        #expect(spec.host == "myhost")
+        #expect(spec.port == 8648)
+    }
+
+    @Test func agentSpecCustomPort() {
+        let spec = AgentSpec(host: "myhost", port: 9000)
+        #expect(spec.port == 9000)
     }
 
     // MARK: - ConnectionSpec JSON decoding
@@ -49,7 +53,7 @@ struct ConnectionSpecTests {
         let json = """
         {
             "vnc": { "host": "localhost", "port": 5900, "password": "abc123" },
-            "ssh": { "host": "localhost", "port": 22, "user": "admin", "key": "~/.ssh/id_ed25519" },
+            "agent": { "host": "localhost", "port": 8648 },
             "platform": "windows"
         }
         """
@@ -58,8 +62,8 @@ struct ConnectionSpecTests {
         #expect(spec.vnc.host == "localhost")
         #expect(spec.vnc.port == 5900)
         #expect(spec.vnc.password == "abc123")
-        #expect(spec.ssh?.user == "admin")
-        #expect(spec.ssh?.key == "~/.ssh/id_ed25519")
+        #expect(spec.agent?.host == "localhost")
+        #expect(spec.agent?.port == 8648)
         #expect(spec.platform == .windows)
     }
 
@@ -71,7 +75,7 @@ struct ConnectionSpecTests {
 
         #expect(spec.vnc.host == "192.168.1.100")
         #expect(spec.vnc.port == 5901)
-        #expect(spec.ssh == nil)
+        #expect(spec.agent == nil)
         #expect(spec.platform == nil)
     }
 
@@ -89,18 +93,16 @@ struct ConnectionSpecTests {
         #expect(spec.vnc.port == 5900)
     }
 
-    @Test func parsesSSHEndpoint() throws {
-        let spec = try ConnectionSpec.from(vnc: "localhost", ssh: "admin@myhost:2222")
-        #expect(spec.ssh?.user == "admin")
-        #expect(spec.ssh?.host == "myhost")
-        #expect(spec.ssh?.port == 2222)
+    @Test func parsesAgentEndpoint() throws {
+        let spec = try ConnectionSpec.from(vnc: "localhost", agent: "myhost:8648")
+        #expect(spec.agent?.host == "myhost")
+        #expect(spec.agent?.port == 8648)
     }
 
-    @Test func parsesSSHEndpointDefaultPort() throws {
-        let spec = try ConnectionSpec.from(vnc: "localhost", ssh: "root@10.0.0.1")
-        #expect(spec.ssh?.user == "root")
-        #expect(spec.ssh?.host == "10.0.0.1")
-        #expect(spec.ssh?.port == 22)
+    @Test func parsesAgentEndpointDefaultPort() throws {
+        let spec = try ConnectionSpec.from(vnc: "localhost", agent: "10.0.0.1")
+        #expect(spec.agent?.host == "10.0.0.1")
+        #expect(spec.agent?.port == 8648)
     }
 
     @Test func parsesPlatform() throws {
@@ -111,12 +113,6 @@ struct ConnectionSpecTests {
     @Test func rejectsInvalidPlatform() {
         #expect(throws: ConnectionSpecError.self) {
             try ConnectionSpec.from(vnc: "localhost", platform: "android")
-        }
-    }
-
-    @Test func rejectsInvalidSSHEndpoint() {
-        #expect(throws: ConnectionSpecError.self) {
-            try ConnectionSpec.from(vnc: "localhost", ssh: "noatsign")
         }
     }
 
@@ -135,7 +131,7 @@ struct ConnectionSpecTests {
     @Test func encodesAndDecodesRoundtrip() throws {
         let original = ConnectionSpec(
             vnc: VNCSpec(host: "10.0.0.5", port: 5902, password: "secret"),
-            ssh: SSHSpec(host: "10.0.0.5", port: 22, user: "testuser", key: "~/.ssh/id_rsa"),
+            agent: AgentSpec(host: "10.0.0.5", port: 8648),
             platform: .linux
         )
         let data = try JSONEncoder().encode(original)
@@ -143,7 +139,8 @@ struct ConnectionSpecTests {
         #expect(decoded.vnc.host == original.vnc.host)
         #expect(decoded.vnc.port == original.vnc.port)
         #expect(decoded.vnc.password == original.vnc.password)
-        #expect(decoded.ssh?.user == original.ssh?.user)
+        #expect(decoded.agent?.host == original.agent?.host)
+        #expect(decoded.agent?.port == original.agent?.port)
         #expect(decoded.platform == original.platform)
     }
 }

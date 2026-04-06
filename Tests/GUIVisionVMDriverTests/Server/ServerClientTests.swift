@@ -17,7 +17,6 @@ struct ServerClientTests {
     @Test func socketPathHexSegment() {
         let spec = ConnectionSpec(vnc: VNCSpec(host: "localhost", port: 5900))
         let path = ServerClient.socketPath(for: spec)
-        // Extract the hex segment between "guivision-" and ".sock"
         let stripped = path
             .replacingOccurrences(of: "/tmp/guivision-", with: "")
             .replacingOccurrences(of: ".sock", with: "")
@@ -33,10 +32,10 @@ struct ServerClientTests {
         #expect(ServerClient.socketPath(for: spec1) == ServerClient.socketPath(for: spec2))
     }
 
-    @Test func sameSpecWithSSHProducesSamePath() {
-        let ssh = SSHSpec(host: "10.0.0.1", port: 22, user: "admin", key: "~/.ssh/id_ed25519")
-        let spec1 = ConnectionSpec(vnc: VNCSpec(host: "10.0.0.1", port: 5900), ssh: ssh, platform: .macos)
-        let spec2 = ConnectionSpec(vnc: VNCSpec(host: "10.0.0.1", port: 5900), ssh: ssh, platform: .macos)
+    @Test func sameSpecWithAgentProducesSamePath() {
+        let agent = AgentSpec(host: "10.0.0.1", port: 8648)
+        let spec1 = ConnectionSpec(vnc: VNCSpec(host: "10.0.0.1", port: 5900), agent: agent, platform: .macos)
+        let spec2 = ConnectionSpec(vnc: VNCSpec(host: "10.0.0.1", port: 5900), agent: agent, platform: .macos)
         #expect(ServerClient.socketPath(for: spec1) == ServerClient.socketPath(for: spec2))
     }
 
@@ -60,11 +59,11 @@ struct ServerClientTests {
         #expect(ServerClient.socketPath(for: spec1) != ServerClient.socketPath(for: spec2))
     }
 
-    @Test func specWithSSHDiffersFromSpecWithout() {
+    @Test func specWithAgentDiffersFromSpecWithout() {
         let spec1 = ConnectionSpec(vnc: VNCSpec(host: "localhost", port: 5900))
         let spec2 = ConnectionSpec(
             vnc: VNCSpec(host: "localhost", port: 5900),
-            ssh: SSHSpec(host: "localhost", port: 22, user: "admin")
+            agent: AgentSpec(host: "localhost", port: 8648)
         )
         #expect(ServerClient.socketPath(for: spec1) != ServerClient.socketPath(for: spec2))
     }
@@ -83,7 +82,6 @@ struct ServerClientTests {
         let pidPath = ServerClient.pidPath(for: spec)
         #expect(pidPath.hasPrefix("/tmp/guivision-"))
         #expect(pidPath.hasSuffix(".pid"))
-        // Same hex segment as socket path
         let socketHex = socketPath
             .replacingOccurrences(of: "/tmp/guivision-", with: "")
             .replacingOccurrences(of: ".sock", with: "")
@@ -99,13 +97,11 @@ struct ServerClientTests {
         #expect(ServerClient.pidPath(for: spec1) != ServerClient.pidPath(for: spec2))
     }
 
-    // MARK: - Request serialization format
+    // MARK: - Wire protocol serialization
 
     @Test func serializeRequestProducesCorrectHTTPFormat() {
-        // Verify that send() serializes requests using HTTPParser.serializeRequest,
-        // which produces valid HTTP/1.1 wire format.
-        let request = HTTPRequest(method: "GET", path: "/health")
-        let data = HTTPParser.serializeRequest(request)
+        let request = WireRequest(method: "GET", path: "/health")
+        let data = request.serialize()
         let text = String(decoding: data, as: UTF8.self)
         #expect(text.hasPrefix("GET /health HTTP/1.1\r\n"))
         #expect(text.contains("Connection: close\r\n"))
@@ -114,34 +110,11 @@ struct ServerClientTests {
 
     @Test func serializePostRequestIncludesContentLength() {
         let body = Data(#"{"x":1}"#.utf8)
-        let request = HTTPRequest(method: "POST", path: "/click", body: body)
-        let data = HTTPParser.serializeRequest(request)
+        let request = WireRequest(method: "POST", path: "/click", body: body)
+        let data = request.serialize()
         let text = String(decoding: data, as: UTF8.self)
         #expect(text.hasPrefix("POST /click HTTP/1.1\r\n"))
         #expect(text.contains("Content-Length: \(body.count)\r\n"))
         #expect(data.suffix(body.count) == body)
-    }
-
-    // MARK: - Response parsing
-
-    @Test func parseResponseRoundTrip() throws {
-        // Build a response using serializeResponse (as the server would),
-        // then verify parseResponse recovers the same values.
-        let body = Data(#"{"status":"ok"}"#.utf8)
-        let response = HTTPResponse(statusCode: 200, contentType: "application/json", body: body)
-        let wire = HTTPParser.serializeResponse(response)
-        let parsed = try HTTPParser.parseResponse(from: wire)
-        #expect(parsed.statusCode == 200)
-        #expect(parsed.contentType == "application/json")
-        #expect(parsed.body == body)
-    }
-
-    @Test func parseErrorResponseRoundTrip() throws {
-        let body = Data(#"{"error":"not found"}"#.utf8)
-        let response = HTTPResponse(statusCode: 404, contentType: "application/json", body: body)
-        let wire = HTTPParser.serializeResponse(response)
-        let parsed = try HTTPParser.parseResponse(from: wire)
-        #expect(parsed.statusCode == 404)
-        #expect(parsed.body == body)
     }
 }

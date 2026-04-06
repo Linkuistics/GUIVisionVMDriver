@@ -19,7 +19,8 @@
 # After sourcing, these env vars are set:
 #   GUIVISION_VNC=host:port
 #   GUIVISION_VNC_PASSWORD=...           (tart only; unset for QEMU)
-#   GUIVISION_SSH=admin@ip               (unless --no-ssh; QEMU: admin@localhost -p 2222)
+#   GUIVISION_AGENT=host:port            (agent TCP service on port 8648)
+#   GUIVISION_SSH=admin@ip               (macOS/Linux debug only; not set for Windows)
 #   GUIVISION_PLATFORM=macos|linux|windows
 #   GUIVISION_VM_NAME=...                (for vm-stop.sh)
 #   GUIVISION_VM_PID=...                 (tart or qemu-system-aarch64 PID)
@@ -28,7 +29,7 @@
 #
 # QEMU clone files are stored in ~/.guivision/clones/$_NAME/ and the path is
 # exported as GUIVISION_VM_CLONE_DIR so vm-stop.sh knows where to clean up.
-# VNC is fixed at localhost:5901 and SSH is forwarded on localhost:2222 for QEMU.
+# VNC is fixed at localhost:5901 for QEMU. Agent is at localhost:8648 for QEMU.
 #
 # Then run tests:
 #   swift test --filter IntegrationTests
@@ -173,10 +174,31 @@ if [[ "$_TOOL" == "tart" ]]; then
 
             if $_SSH_READY; then
                 export GUIVISION_SSH="$_SSH_USER@$_IP"
-                echo "SSH: $_SSH_USER@$_IP"
+                echo "SSH: $_SSH_USER@$_IP (debug convenience)"
             else
-                echo "WARNING: SSH not reachable — SSH tests will be skipped"
+                echo "WARNING: SSH not reachable — SSH debugging will be unavailable"
             fi
+        fi
+    fi
+
+    # Wait for agent on port 8648
+    if [[ -n "$_IP" ]]; then
+        echo -n "Waiting for agent at $_IP:8648..."
+        _AGENT_READY=false
+        for i in $(seq 1 60); do
+            if curl -sf --connect-timeout 2 "http://$_IP:8648/health" &>/dev/null; then
+                _AGENT_READY=true
+                echo " ready."
+                break
+            fi
+            echo -n "."
+            sleep 2
+        done
+        if $_AGENT_READY; then
+            export GUIVISION_AGENT="$_IP:8648"
+        else
+            echo ""
+            echo "WARNING: Agent not reachable at $_IP:8648 — agent commands will fail"
         fi
     fi
 
@@ -291,7 +313,7 @@ elif [[ "$_TOOL" == "qemu" ]]; then
         -device "usb-kbd" \
         -device "usb-tablet" \
         -device "virtio-net-pci,netdev=net0" \
-        -netdev "user,id=net0,hostfwd=tcp::2222-:22" \
+        -netdev "user,id=net0,hostfwd=tcp::8648-:8648" \
         -vnc ":1,password=on" \
         -monitor "unix:$_MONITOR_SOCK,server,nowait" \
         -display none &
@@ -322,41 +344,23 @@ elif [[ "$_TOOL" == "qemu" ]]; then
     export GUIVISION_VM_TOOL="qemu"
     export GUIVISION_VM_CLONE_DIR="$_CLONE_DIR"
 
-    # Wait for SSH if requested
-    if $_SSH; then
-        # Set up SSH_ASKPASS so password auth works non-interactively.
-        # SSH tries key auth first; SSH_ASKPASS is only used as fallback.
-        _ASKPASS_FILE=$(mktemp)
-        cat > "$_ASKPASS_FILE" << 'EOF'
-#!/bin/bash
-echo 'admin'
-EOF
-        chmod 700 "$_ASKPASS_FILE"
-        export SSH_ASKPASS="$_ASKPASS_FILE"
-        export SSH_ASKPASS_REQUIRE="force"
-        export DISPLAY=:0
-
-        echo "Waiting for SSH at $_SSH_USER@localhost (port 2222)..."
-        _SSH_READY=false
-        for i in $(seq 1 80); do
-            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-                   -o LogLevel=ERROR -o ConnectTimeout=5 \
-                   -p 2222 "$_SSH_USER@localhost" "echo ok" &>/dev/null; then
-                _SSH_READY=true
-                break
-            fi
-            sleep 5
-        done
-
-        rm -f "$_ASKPASS_FILE"
-        unset SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY
-
-        if $_SSH_READY; then
-            export GUIVISION_SSH="$_SSH_USER@localhost -p 2222"
-            echo "SSH: $_SSH_USER@localhost -p 2222"
-        else
-            echo "WARNING: SSH not reachable — SSH tests will be skipped"
+    # Wait for agent on port 8648 (forwarded from guest)
+    echo -n "Waiting for agent at localhost:8648..."
+    _AGENT_READY=false
+    for i in $(seq 1 120); do
+        if curl -sf --connect-timeout 2 "http://localhost:8648/health" &>/dev/null; then
+            _AGENT_READY=true
+            echo " ready."
+            break
         fi
+        echo -n "."
+        sleep 5
+    done
+    if $_AGENT_READY; then
+        export GUIVISION_AGENT="localhost:8648"
+    else
+        echo ""
+        echo "WARNING: Agent not reachable at localhost:8648 — agent commands will fail"
     fi
 
     # Open VNC viewer if requested
@@ -394,6 +398,7 @@ echo ""
 echo "VM ready. Environment variables set:"
 echo "  GUIVISION_VNC=$GUIVISION_VNC"
 [[ -n "${GUIVISION_VNC_PASSWORD:-}" ]] && echo "  GUIVISION_VNC_PASSWORD=(set)"
+[[ -n "${GUIVISION_AGENT:-}" ]] && echo "  GUIVISION_AGENT=$GUIVISION_AGENT"
 [[ -n "${GUIVISION_SSH:-}" ]] && echo "  GUIVISION_SSH=$GUIVISION_SSH"
 echo "  GUIVISION_PLATFORM=$GUIVISION_PLATFORM"
 echo "  GUIVISION_VM_TOOL=$GUIVISION_VM_TOOL"

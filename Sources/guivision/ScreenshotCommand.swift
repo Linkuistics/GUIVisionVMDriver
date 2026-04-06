@@ -29,7 +29,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
         if let regionStr = region {
             cropRegion = try parseRegion(regionStr)
         } else if let windowFilter = window {
-            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            let win = try await resolveWindow(connection: connection, windowFilter: windowFilter)
             cropRegion = CGRect(
                 x: win.position.x, y: win.position.y,
                 width: win.size.width, height: win.size.height

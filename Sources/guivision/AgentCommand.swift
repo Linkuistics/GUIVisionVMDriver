@@ -8,6 +8,7 @@ struct AgentCommand: AsyncParsableCommand {
         commandName: "agent",
         abstract: "Interact with the in-VM accessibility agent",
         subcommands: [
+            AgentHealthCmd.self,
             AgentSnapshotCmd.self,
             AgentInspectCmd.self,
             AgentPressCmd.self,
@@ -48,12 +49,21 @@ struct AgentWindowFilter: ParsableArguments {
     var window: String?
 }
 
-// MARK: - Helper
+// MARK: - Health
 
-private func makeAgent(from connection: ConnectionOptions) throws -> AgentClient {
-    let spec = try connection.resolve()
-    let sshClient = try SSHClient(connectionSpec: spec)
-    return AgentClient(sshClient: sshClient)
+struct AgentHealthCmd: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "health",
+        abstract: "Check agent health"
+    )
+    @OptionGroup var connection: ConnectionOptions
+
+    mutating func run() async throws {
+        let agent = try connection.resolveAgent()
+        let ok = try await agent.health()
+        print(ok ? "OK" : "UNHEALTHY")
+        if !ok { throw ExitCode.failure }
+    }
 }
 
 // MARK: - Snapshot
@@ -82,10 +92,9 @@ struct AgentSnapshotCmd: AsyncParsableCommand {
     var depth: Int?
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.snapshot(mode: mode, window: window, role: role, label: label, depth: depth)
-        let output = try AgentFormatter.formatSnapshot(data)
-        print(output)
+        let agent = try connection.resolveAgent()
+        let response = try await agent.snapshot(mode: mode, window: window, role: role, label: label, depth: depth)
+        print(AgentFormatter.formatSnapshot(response))
     }
 }
 
@@ -102,16 +111,12 @@ struct AgentInspectCmd: AsyncParsableCommand {
     @OptionGroup var windowFilter: AgentWindowFilter
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.inspect(
-            role: query.role,
-            label: query.label,
-            window: windowFilter.window,
-            id: query.id,
-            index: query.index
+        let agent = try connection.resolveAgent()
+        let response = try await agent.inspect(
+            role: query.role, label: query.label,
+            window: windowFilter.window, id: query.id, index: query.index
         )
-        let output = try AgentFormatter.formatInspect(data)
-        print(output)
+        print(AgentFormatter.formatInspect(response))
     }
 }
 
@@ -128,16 +133,12 @@ struct AgentPressCmd: AsyncParsableCommand {
     @OptionGroup var windowFilter: AgentWindowFilter
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.press(
-            role: query.role,
-            label: query.label,
-            window: windowFilter.window,
-            id: query.id,
-            index: query.index
+        let agent = try connection.resolveAgent()
+        let response = try await agent.press(
+            role: query.role, label: query.label,
+            window: windowFilter.window, id: query.id, index: query.index
         )
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
@@ -157,17 +158,13 @@ struct AgentSetValueCmd: AsyncParsableCommand {
     var value: String
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.setValue(
-            role: query.role,
-            label: query.label,
-            window: windowFilter.window,
-            id: query.id,
-            index: query.index,
+        let agent = try connection.resolveAgent()
+        let response = try await agent.setValue(
+            role: query.role, label: query.label,
+            window: windowFilter.window, id: query.id, index: query.index,
             value: value
         )
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
@@ -184,16 +181,12 @@ struct AgentFocusCmd: AsyncParsableCommand {
     @OptionGroup var windowFilter: AgentWindowFilter
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.focus(
-            role: query.role,
-            label: query.label,
-            window: windowFilter.window,
-            id: query.id,
-            index: query.index
+        let agent = try connection.resolveAgent()
+        let response = try await agent.focus(
+            role: query.role, label: query.label,
+            window: windowFilter.window, id: query.id, index: query.index
         )
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
@@ -210,16 +203,12 @@ struct AgentShowMenuCmd: AsyncParsableCommand {
     @OptionGroup var windowFilter: AgentWindowFilter
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.showMenu(
-            role: query.role,
-            label: query.label,
-            window: windowFilter.window,
-            id: query.id,
-            index: query.index
+        let agent = try connection.resolveAgent()
+        let response = try await agent.showMenu(
+            role: query.role, label: query.label,
+            window: windowFilter.window, id: query.id, index: query.index
         )
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
@@ -234,210 +223,134 @@ struct AgentWindowsCmd: AsyncParsableCommand {
     @OptionGroup var connection: ConnectionOptions
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.windows()
-        let output = try AgentFormatter.formatWindows(data)
-        print(output)
+        let agent = try connection.resolveAgent()
+        let response = try await agent.windows()
+        print(AgentFormatter.formatWindows(response))
     }
 }
 
 // MARK: - Window Focus
 
 struct AgentWindowFocusCmd: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "window-focus",
-        abstract: "Focus a window"
-    )
-
+    static let configuration = CommandConfiguration(commandName: "window-focus", abstract: "Focus a window")
     @OptionGroup var connection: ConnectionOptions
-
-    @Option(name: .long, help: "Window title or app name filter")
-    var window: String
+    @Option(name: .long, help: "Window title or app name filter") var window: String
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.windowFocus(window: window)
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        let agent = try connection.resolveAgent()
+        let response = try await agent.windowFocus(window: window)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
 // MARK: - Window Resize
 
 struct AgentWindowResizeCmd: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "window-resize",
-        abstract: "Resize a window"
-    )
-
+    static let configuration = CommandConfiguration(commandName: "window-resize", abstract: "Resize a window")
     @OptionGroup var connection: ConnectionOptions
-
-    @Option(name: .long, help: "Window title or app name filter")
-    var window: String
-
-    @Option(name: .long, help: "New width")
-    var width: Int
-
-    @Option(name: .long, help: "New height")
-    var height: Int
+    @Option(name: .long, help: "Window title or app name filter") var window: String
+    @Option(name: .long, help: "New width") var width: Int
+    @Option(name: .long, help: "New height") var height: Int
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.windowResize(window: window, width: width, height: height)
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        let agent = try connection.resolveAgent()
+        let response = try await agent.windowResize(window: window, width: width, height: height)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
 // MARK: - Window Move
 
 struct AgentWindowMoveCmd: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "window-move",
-        abstract: "Move a window"
-    )
-
+    static let configuration = CommandConfiguration(commandName: "window-move", abstract: "Move a window")
     @OptionGroup var connection: ConnectionOptions
-
-    @Option(name: .long, help: "Window title or app name filter")
-    var window: String
-
-    @Option(name: .long, help: "New X position")
-    var x: Int
-
-    @Option(name: .long, help: "New Y position")
-    var y: Int
+    @Option(name: .long, help: "Window title or app name filter") var window: String
+    @Option(name: .long, help: "New X position") var x: Int
+    @Option(name: .long, help: "New Y position") var y: Int
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.windowMove(window: window, x: x, y: y)
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        let agent = try connection.resolveAgent()
+        let response = try await agent.windowMove(window: window, x: x, y: y)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
 // MARK: - Window Close
 
 struct AgentWindowCloseCmd: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "window-close",
-        abstract: "Close a window"
-    )
-
+    static let configuration = CommandConfiguration(commandName: "window-close", abstract: "Close a window")
     @OptionGroup var connection: ConnectionOptions
-
-    @Option(name: .long, help: "Window title or app name filter")
-    var window: String
+    @Option(name: .long, help: "Window title or app name filter") var window: String
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.windowClose(window: window)
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        let agent = try connection.resolveAgent()
+        let response = try await agent.windowClose(window: window)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
 // MARK: - Window Minimize
 
 struct AgentWindowMinimizeCmd: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "window-minimize",
-        abstract: "Minimize a window"
-    )
-
+    static let configuration = CommandConfiguration(commandName: "window-minimize", abstract: "Minimize a window")
     @OptionGroup var connection: ConnectionOptions
-
-    @Option(name: .long, help: "Window title or app name filter")
-    var window: String
+    @Option(name: .long, help: "Window title or app name filter") var window: String
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.windowMinimize(window: window)
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        let agent = try connection.resolveAgent()
+        let response = try await agent.windowMinimize(window: window)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
 // MARK: - Screenshot Element
 
 struct AgentScreenshotElementCmd: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "screenshot-element",
-        abstract: "Screenshot a specific element"
-    )
-
+    static let configuration = CommandConfiguration(commandName: "screenshot-element", abstract: "Screenshot a specific element")
     @OptionGroup var connection: ConnectionOptions
     @OptionGroup var query: AgentQueryOptions
     @OptionGroup var windowFilter: AgentWindowFilter
-
-    @Option(name: .long, help: "Padding around element in pixels")
-    var padding: Int?
-
-    @Option(name: .long, help: "Output file path")
-    var output: String
+    @Option(name: .long, help: "Padding around element in pixels") var padding: Int?
+    @Option(name: .long, help: "Output file path") var output: String
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.screenshotElement(
-            role: query.role,
-            label: query.label,
-            window: windowFilter.window,
-            id: query.id,
-            index: query.index,
-            padding: padding,
-            output: output
+        let agent = try connection.resolveAgent()
+        let response = try await agent.screenshotElement(
+            role: query.role, label: query.label,
+            window: windowFilter.window, id: query.id, index: query.index,
+            padding: padding, output: output
         )
-        let result = try AgentFormatter.formatAction(data)
-        print(result)
-        print("Screenshot saved to \(output)")
+        print(AgentFormatter.formatAction(response))
     }
 }
 
 // MARK: - Screenshot Window
 
 struct AgentScreenshotWindowCmd: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "screenshot-window",
-        abstract: "Screenshot a window"
-    )
-
+    static let configuration = CommandConfiguration(commandName: "screenshot-window", abstract: "Screenshot a window")
     @OptionGroup var connection: ConnectionOptions
-
-    @Option(name: .long, help: "Window title or app name filter")
-    var window: String
-
-    @Option(name: .long, help: "Output file path")
-    var output: String
+    @Option(name: .long, help: "Window title or app name filter") var window: String
+    @Option(name: .long, help: "Output file path") var output: String
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.screenshotWindow(window: window, output: output)
-        let result = try AgentFormatter.formatAction(data)
-        print(result)
-        print("Screenshot saved to \(output)")
+        let agent = try connection.resolveAgent()
+        let response = try await agent.screenshotWindow(window: window, output: output)
+        print(AgentFormatter.formatAction(response))
     }
 }
 
 // MARK: - Wait
 
 struct AgentWaitCmd: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "wait",
-        abstract: "Wait for accessibility to be ready"
-    )
-
+    static let configuration = CommandConfiguration(commandName: "wait", abstract: "Wait for accessibility to be ready")
     @OptionGroup var connection: ConnectionOptions
-
-    @Option(name: .long, help: "Window title or app name filter")
-    var window: String?
-
-    @Option(name: .long, help: "Timeout in seconds")
-    var timeout: Int?
+    @Option(name: .long, help: "Window title or app name filter") var window: String?
+    @Option(name: .long, help: "Timeout in seconds") var timeout: Int?
 
     mutating func run() async throws {
-        let agent = try makeAgent(from: connection)
-        let data = try agent.wait(window: window, timeout: timeout)
-        let output = try AgentFormatter.formatAction(data)
-        print(output)
+        let agent = try connection.resolveAgent()
+        let response = try await agent.wait(window: window, timeout: timeout)
+        print(AgentFormatter.formatAction(response))
     }
 }
+

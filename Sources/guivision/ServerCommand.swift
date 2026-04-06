@@ -29,13 +29,10 @@ struct ServerCommand: AsyncParsableCommand {
 
         let socketPath = ServerClient.socketPath(for: spec)
         let pidPath = ServerClient.pidPath(for: spec)
-        try await server.start(socketPath: socketPath, pidPath: pidPath)
 
-        print("ready")
-        fflush(stdout)
-
-        // Await indefinitely; the process is terminated by the idle timer (exit(0))
-        // or by the /stop endpoint.
-        try await Task.sleep(for: .seconds(100 * 365 * 24 * 3600))
+        try await server.start(socketPath: socketPath, pidPath: pidPath) {
+            print("ready")
+            fflush(stdout)
+        }
     }
 }

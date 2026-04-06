@@ -15,33 +15,27 @@ public struct VNCSpec: Codable, Sendable {
     }
 }
 
-/// SSH connection parameters. Optional — enables shell access and file transfer.
-public struct SSHSpec: Codable, Sendable {
+/// Agent TCP service connection parameters. Optional — enables accessibility, exec, file transfer.
+public struct AgentSpec: Codable, Sendable {
     public let host: String
     public let port: Int
-    public let user: String
-    public let key: String?
-    public let password: String?
 
-    public init(host: String, port: Int = 22, user: String, key: String? = nil, password: String? = nil) {
+    public init(host: String, port: Int = 8648) {
         self.host = host
         self.port = port
-        self.user = user
-        self.key = key
-        self.password = password
     }
 }
 
 /// Complete connection specification for a target machine.
-/// Only `vnc` is required. SSH adds shell access and file transfer.
+/// `vnc` is required. `agent` adds accessibility tree, exec, and file transfer.
 public struct ConnectionSpec: Codable, Sendable {
     public let vnc: VNCSpec
-    public let ssh: SSHSpec?
+    public let agent: AgentSpec?
     public let platform: Platform?
 
-    public init(vnc: VNCSpec, ssh: SSHSpec? = nil, platform: Platform? = nil) {
+    public init(vnc: VNCSpec, agent: AgentSpec? = nil, platform: Platform? = nil) {
         self.vnc = vnc
-        self.ssh = ssh
+        self.agent = agent
         self.platform = platform
     }
 }
@@ -60,13 +54,13 @@ extension ConnectionSpec {
     /// Construct a connection spec from CLI flag values.
     public static func from(
         vnc: String,
-        ssh: String? = nil,
+        agent: String? = nil,
         platform: String? = nil
     ) throws -> ConnectionSpec {
         let vncSpec = try parseVNCEndpoint(vnc)
-        let sshSpec = try ssh.map { try parseSSHEndpoint($0) }
+        let agentSpec = try agent.map { try parseAgentEndpoint($0) }
         let platformValue = try platform.map { try parsePlatform($0) }
-        return ConnectionSpec(vnc: vncSpec, ssh: sshSpec, platform: platformValue)
+        return ConnectionSpec(vnc: vncSpec, agent: agentSpec, platform: platformValue)
     }
 }
 
@@ -78,14 +72,9 @@ extension ConnectionSpec {
         return VNCSpec(host: host, port: port)
     }
 
-    static func parseSSHEndpoint(_ endpoint: String) throws -> SSHSpec {
-        guard let atIndex = endpoint.firstIndex(of: "@") else {
-            throw ConnectionSpecError.invalidSSHEndpoint(endpoint)
-        }
-        let user = String(endpoint[endpoint.startIndex..<atIndex])
-        let hostPart = String(endpoint[endpoint.index(after: atIndex)...])
-        let (host, port) = try parseHostPort(hostPart, defaultPort: 22)
-        return SSHSpec(host: host, port: port, user: user)
+    public static func parseAgentEndpoint(_ endpoint: String) throws -> AgentSpec {
+        let (host, port) = try parseHostPort(endpoint, defaultPort: 8648)
+        return AgentSpec(host: host, port: port)
     }
 
     static func parsePlatform(_ value: String) throws -> Platform {
@@ -95,7 +84,7 @@ extension ConnectionSpec {
         return platform
     }
 
-    private static func parseHostPort(_ endpoint: String, defaultPort: Int) throws -> (String, Int) {
+    static func parseHostPort(_ endpoint: String, defaultPort: Int) throws -> (String, Int) {
         let parts = endpoint.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
         let host = String(parts[0])
         if host.isEmpty {
@@ -114,15 +103,12 @@ extension ConnectionSpec {
 // MARK: - Errors
 
 public enum ConnectionSpecError: LocalizedError {
-    case invalidSSHEndpoint(String)
     case invalidPlatform(String)
     case emptyHost
     case invalidPort(String)
 
     public var errorDescription: String? {
         switch self {
-        case .invalidSSHEndpoint(let endpoint):
-            "Invalid SSH endpoint '\(endpoint)'. Expected format: user@host[:port]"
         case .invalidPlatform(let value):
             "Invalid platform '\(value)'. Expected: macos, windows, or linux"
         case .emptyHost:

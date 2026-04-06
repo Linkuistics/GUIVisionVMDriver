@@ -12,6 +12,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.21.0"),
         .package(name: "royalvnc", path: "LocalPackages/royalvnc"),
     ],
     targets: [
@@ -36,6 +37,7 @@ let package = Package(
             name: "GUIVisionVMDriver",
             dependencies: [
                 "GUIVisionAgentProtocol",
+                .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "RoyalVNCKit", package: "royalvnc"),
             ],
             path: "Sources/GUIVisionVMDriver",
@@ -61,7 +63,7 @@ let package = Package(
             name: "guivision-agent",
             dependencies: [
                 "GUIVisionAgentLib",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Hummingbird", package: "hummingbird"),
             ],
             path: "Sources/guivision-agent"
         ),
@@ -72,6 +74,7 @@ let package = Package(
             dependencies: [
                 "GUIVisionVMDriver",
                 "GUIVisionAgentProtocol",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "RoyalVNCKit", package: "royalvnc"),
             ],
             path: "Tests/GUIVisionVMDriverTests"
@@ -88,6 +91,7 @@ let package = Package(
             dependencies: [
                 "GUIVisionAgentLib",
                 "GUIVisionAgentProtocol",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
             ],
             path: "Tests/GUIVisionAgentTests"
         ),

@@ -8,7 +8,7 @@ import GUIVisionVMDriver
 
 // MARK: - Environment-driven connection setup
 
-/// Reads VNC/SSH endpoints from environment variables.
+/// Reads VNC/agent endpoints from environment variables.
 /// No VM management — the caller is responsible for providing a running VM.
 ///
 /// Required:
@@ -16,17 +16,15 @@ import GUIVisionVMDriver
 ///
 /// Optional:
 ///   GUIVISION_VNC_PASSWORD=secret    VNC password
-///   GUIVISION_SSH=user@host[:port]   SSH endpoint (enables SSH tests)
+///   GUIVISION_AGENT=host:port        Agent endpoint (enables agent tests)
 ///   GUIVISION_PLATFORM=macos         Platform hint (default: macos)
-///   GUIVISION_SKIP_INTEGRATION=1          Skip all integration tests
+///   GUIVISION_SKIP_INTEGRATION=1     Skip all integration tests
 ///
 /// Example with tart:
 ///   tart clone guivision-golden-macos-tahoe test-vm
 ///   tart run test-vm --no-graphics --vnc-experimental &
-///   # parse VNC URL from tart output, get IP via `tart ip test-vm`
 ///   GUIVISION_VNC=localhost:5901 \
-///   GUIVISION_VNC_PASSWORD=abc123 \
-///   GUIVISION_SSH=admin@192.168.64.100 \
+///   GUIVISION_AGENT=192.168.64.100:8648 \
 ///   swift test --filter IntegrationTests
 enum TestEnv {
     static let spec: ConnectionSpec? = {
@@ -34,18 +32,17 @@ enum TestEnv {
             return nil
         }
         let password = ProcessInfo.processInfo.environment["GUIVISION_VNC_PASSWORD"]
-        let ssh = ProcessInfo.processInfo.environment["GUIVISION_SSH"]
+        let agent = ProcessInfo.processInfo.environment["GUIVISION_AGENT"]
         let platform = ProcessInfo.processInfo.environment["GUIVISION_PLATFORM"]
 
-        guard var spec = try? ConnectionSpec.from(vnc: vnc, ssh: ssh, platform: platform) else {
+        guard var spec = try? ConnectionSpec.from(vnc: vnc, agent: agent, platform: platform) else {
             return nil
         }
 
-        // Apply VNC password if provided separately
         if let password, !password.isEmpty {
             spec = ConnectionSpec(
                 vnc: VNCSpec(host: spec.vnc.host, port: spec.vnc.port, password: password),
-                ssh: spec.ssh,
+                agent: spec.agent,
                 platform: spec.platform
             )
         }
@@ -53,9 +50,9 @@ enum TestEnv {
         return spec
     }()
 
-    static let ssh: SSHClient? = {
-        guard let spec, spec.ssh != nil else { return nil }
-        return try? SSHClient(connectionSpec: spec)
+    static let agent: AgentTCPClient? = {
+        guard let spec, let agentSpec = spec.agent else { return nil }
+        return AgentTCPClient(spec: agentSpec)
     }()
 }
 
@@ -342,225 +339,5 @@ struct VNCIntegrationTests {
     }
 }
 
-// MARK: - SSH Integration Tests
-
-@Suite("SSH Integration",
-       .enabled(if: ProcessInfo.processInfo.environment["GUIVISION_SKIP_INTEGRATION"] != "1"
-                && ProcessInfo.processInfo.environment["GUIVISION_SSH"] != nil),
-       .serialized)
-struct SSHIntegrationTests {
-
-    // MARK: - Command Execution
-
-    @Test func execSimpleCommand() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
-        let result = try client.exec("echo hello")
-        #expect(result.succeeded)
-        #expect(result.stdout == "hello")
-        #expect(result.exitCode == 0)
-    }
-
-    @Test func execCommandWithArguments() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
-        let result = try client.exec("uname -s")
-        #expect(result.succeeded)
-        #expect(result.stdout == "Darwin")
-    }
-
-    @Test func execCommandCapturesStderr() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
-        let result = try client.exec("ls /nonexistent-path-12345")
-        #expect(!result.succeeded)
-        #expect(result.exitCode != 0)
-        #expect(!result.stderr.isEmpty)
-    }
-
-    @Test func execCommandReturnsExitCode() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
-        let result = try client.exec("exit 42")
-        #expect(result.exitCode == 42)
-        #expect(!result.succeeded)
-    }
-
-    @Test func execMultilineOutput() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
-        let result = try client.exec("echo 'line1'; echo 'line2'; echo 'line3'")
-        #expect(result.succeeded)
-        let lines = result.stdout.split(separator: "\n")
-        #expect(lines.count == 3)
-        #expect(lines[0] == "line1")
-        #expect(lines[2] == "line3")
-    }
-
-    // MARK: - SCP File Transfer
-
-    @Test func uploadAndVerifyFile() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
-
-        let testContent = "GUIVisionVMDriver upload test — \(UUID().uuidString)"
-        let localPath = NSTemporaryDirectory() + "guivision-upload-\(UUID().uuidString).txt"
-        let remotePath = "/tmp/guivision-upload-test.txt"
-        defer {
-            try? FileManager.default.removeItem(atPath: localPath)
-            _ = try? client.exec("rm -f \(remotePath)")
-        }
-
-        try testContent.write(toFile: localPath, atomically: true, encoding: .utf8)
-        let uploadResult = try client.upload(localPath: localPath, remotePath: remotePath)
-        #expect(uploadResult.succeeded, "Upload failed: \(uploadResult.stderr)")
-
-        let catResult = try client.exec("cat \(remotePath)")
-        #expect(catResult.succeeded)
-        #expect(catResult.stdout == testContent)
-    }
-
-    @Test func downloadFile() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
-
-        let testContent = "GUIVisionVMDriver download test — \(UUID().uuidString)"
-        let remotePath = "/tmp/guivision-download-test.txt"
-        let localPath = NSTemporaryDirectory() + "guivision-download-\(UUID().uuidString).txt"
-        defer {
-            try? FileManager.default.removeItem(atPath: localPath)
-            _ = try? client.exec("rm -f \(remotePath)")
-        }
-
-        let writeResult = try client.exec("echo -n '\(testContent)' > \(remotePath)")
-        #expect(writeResult.succeeded)
-
-        let downloadResult = try client.download(remotePath: remotePath, localPath: localPath)
-        #expect(downloadResult.succeeded, "Download failed: \(downloadResult.stderr)")
-
-        let downloaded = try String(contentsOfFile: localPath, encoding: .utf8)
-        #expect(downloaded == testContent)
-    }
-
-    @Test func uploadDownloadRoundtrip() throws {
-        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
-
-        let testData = Data((0..<256).map { UInt8($0) })
-        let localUploadPath = NSTemporaryDirectory() + "guivision-roundtrip-up-\(UUID().uuidString).bin"
-        let remotePath = "/tmp/guivision-roundtrip-test.bin"
-        let localDownloadPath = NSTemporaryDirectory() + "guivision-roundtrip-down-\(UUID().uuidString).bin"
-        defer {
-            try? FileManager.default.removeItem(atPath: localUploadPath)
-            try? FileManager.default.removeItem(atPath: localDownloadPath)
-            _ = try? client.exec("rm -f \(remotePath)")
-        }
-
-        try testData.write(to: URL(fileURLWithPath: localUploadPath))
-
-        let up = try client.upload(localPath: localUploadPath, remotePath: remotePath)
-        #expect(up.succeeded)
-
-        let down = try client.download(remotePath: remotePath, localPath: localDownloadPath)
-        #expect(down.succeeded)
-
-        let roundtripped = try Data(contentsOf: URL(fileURLWithPath: localDownloadPath))
-        #expect(roundtripped == testData)
-    }
-
-    // MARK: - VNC + SSH Cross-verification
-
-    @Test func vncInputReachesVM() async throws {
-        let spec = try #require(TestEnv.spec, "GUIVISION_VNC not set")
-        let client = try #require(TestEnv.ssh, "GUIVISION_SSH not set")
-
-        let capture = VNCCapture(spec: spec.vnc)
-        try await capture.connect(timeout: .seconds(30))
-        defer { Task { await capture.disconnect() } }
-
-        let marker = String(UUID().uuidString.prefix(8)).lowercased()
-        let resultPath = "/tmp/r.txt"
-        defer {
-            _ = try? client.exec("rm -f \(resultPath) /tmp/m.sh")
-            _ = try? client.exec("killall Terminal 2>/dev/null")
-        }
-
-        _ = try? client.exec("killall Terminal 2>/dev/null")
-        try await Task.sleep(for: .seconds(2))
-
-        // Create reader script via SSH — reads one line, writes to file
-        _ = try client.exec("printf '#!/bin/bash\\nread x\\necho $x > \(resultPath)\\n' > /tmp/m.sh && chmod +x /tmp/m.sh")
-
-        // Release stuck modifiers, dismiss stale UI
-        try await capture.withConnection { conn in
-            conn.keyUp(.shift)
-            conn.keyUp(.control)
-            conn.keyUp(.option)
-            conn.keyUp(.command)
-            conn.keyUp(.optionForARD)
-        }
-        try await Task.sleep(for: .milliseconds(300))
-        try await capture.withConnection { conn in
-            try VNCInput.pressKey("escape", platform: spec.platform, connection: conn)
-        }
-        try await Task.sleep(for: .milliseconds(500))
-
-        // Open Terminal and wait for it to come to front
-        _ = try client.exec("open -a Terminal")
-        try await Task.sleep(for: .seconds(8))
-
-        // Double-click center to activate Terminal and focus text area
-        let screenSize = await capture.screenSize()!
-        let cx = UInt16(screenSize.width / 2)
-        let cy = UInt16(screenSize.height / 2)
-        try await capture.withConnection { conn in
-            try VNCInput.click(x: cx, y: cy, connection: conn)
-        }
-        try await Task.sleep(for: .seconds(2))
-        try await capture.withConnection { conn in
-            try VNCInput.click(x: cx, y: cy, connection: conn)
-        }
-        try await Task.sleep(for: .seconds(2))
-
-        // Retry up to 3 times — macOS VNC focus is timing-dependent
-        var verified = false
-        for attempt in 1...3 {
-            _ = try? client.exec("rm -f \(resultPath)")
-
-            if attempt > 1 {
-                try await capture.withConnection { conn in
-                    try VNCInput.click(x: cx, y: cy, connection: conn)
-                }
-                try await Task.sleep(for: .seconds(2))
-                try await capture.withConnection { conn in
-                    try VNCInput.pressKey("u", modifiers: ["ctrl"], platform: spec.platform, connection: conn)
-                    try VNCInput.pressKey("c", modifiers: ["ctrl"], platform: spec.platform, connection: conn)
-                }
-                try await Task.sleep(for: .seconds(1))
-            }
-
-            try await capture.withConnection { conn in
-                VNCInput.typeText("/tmp/m.sh", connection: conn)
-            }
-            try await Task.sleep(for: .milliseconds(300))
-            try await capture.withConnection { conn in
-                try VNCInput.pressKey("return", platform: spec.platform, connection: conn)
-            }
-            try await Task.sleep(for: .seconds(2))
-
-            try await capture.withConnection { conn in
-                VNCInput.typeText(marker, connection: conn)
-            }
-            try await Task.sleep(for: .milliseconds(300))
-            try await capture.withConnection { conn in
-                try VNCInput.pressKey("return", platform: spec.platform, connection: conn)
-            }
-            try await Task.sleep(for: .seconds(2))
-
-            let result = try client.exec("cat \(resultPath)")
-            if result.succeeded && result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).contains(marker) {
-                verified = true
-                break
-            }
-        }
-
-        withKnownIssue("macOS VNC focus timing is non-deterministic") {
-            #expect(verified,
-                    "VNC keyboard input should reach Terminal (marker '\(marker)' should appear in \(resultPath))")
-        } when: {
-            !verified
-        }
-    }
-}
+// MARK: - Agent Integration Tests (placeholder — requires agent running in VM)
+// Agent integration tests will be added once golden images with the agent are built.

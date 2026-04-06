@@ -1,34 +1,14 @@
 import CoreGraphics
-import Darwin
 import Foundation
+import Hummingbird
+import HTTPTypes
+import NIOCore
 @preconcurrency import RoyalVNCKit
 
-// MARK: - Server errors
+// MARK: - Server
 
-public enum ServerError: Error, Sendable {
-    case socketCreateFailed(Int32)
-    case bindFailed(Int32)
-    case listenFailed(Int32)
-}
-
-// MARK: - Shared request types
-
-private struct SingleKeyRequest: Decodable { let key: String }
-
-private struct MouseRequest: Decodable {
-    let x: UInt16
-    let y: UInt16
-    let button: String?
-}
-
-/// The core server actor that routes HTTP requests and manages an idle timer.
-///
-/// The idle timer starts immediately on init. Each `handleRequest(_:)` call
-/// cancels the current timer and starts a fresh one. When the timer fires
-/// without a new request, the server shuts down.
-///
-/// Call `start(socketPath:pidPath:)` after init to bind the Unix socket and
-/// begin accepting connections.
+/// VNC-only HTTP server using Hummingbird, listening on a Unix domain socket.
+/// Routes VNC operations (screenshots, input, recording). No SSH, no OCR.
 public actor GUIVisionServer {
 
     // MARK: - Properties
@@ -36,26 +16,12 @@ public actor GUIVisionServer {
     private let spec: ConnectionSpec
     private let idleTimeout: Duration
     public let onShutdown: @Sendable () -> Void
-
-    /// VNC capture actor for screenshots and input delivery.
     private let capture: VNCCapture
-
-    /// SSH client — nil if no SSH spec was provided.
-    private let sshClient: SSHClient?
-
-    /// The currently pending idle timer task. Cancelled and replaced on every request.
     private var idleTimerTask: Task<Void, Never>?
-
-    /// The background accept-loop task. Cancelled by `shutdown()`.
-    private var acceptTask: Task<Void, Never>?
-
-    /// Paths stored so `shutdown()` can remove them.
-    private var currentSocketPath: String?
-    private var currentPidPath: String?
-
-    /// Active recording state.
     private var recordingCapture: StreamingCapture?
     private var recordingTask: Task<Void, Never>?
+    private var currentSocketPath: String?
+    private var currentPidPath: String?
 
     // MARK: - Init
 
@@ -68,100 +34,55 @@ public actor GUIVisionServer {
         self.idleTimeout = idleTimeout
         self.onShutdown = onShutdown
         self.capture = VNCCapture(spec: spec.vnc)
-        self.sshClient = spec.ssh.map { SSHClient(spec: $0) }
-        // Swift 6 strict concurrency: actor-isolated stored properties cannot be
-        // assigned from within a Task closure in a nonisolated initializer.
-        // We work around this by calling the onShutdown closure directly
-        // (a captured value, not actor state).
         let timeout = idleTimeout
         let shutdownCallback = onShutdown
         idleTimerTask = Task {
             do {
                 try await Task.sleep(for: timeout)
                 shutdownCallback()
-            } catch {
-                // Cancelled by a new request — nothing to do.
-            }
+            } catch {}
         }
     }
 
     // MARK: - Connect
 
-    /// Connect the VNC session. Call this after `start(socketPath:pidPath:)`.
     public func connect() async throws {
         try await capture.connect()
     }
 
-    // MARK: - Networking
+    // MARK: - Start
 
-    /// Bind a Unix domain socket at `socketPath`, begin accepting connections,
-    /// and write the PID file at `pidPath`.
-    ///
-    /// This method returns immediately; the accept loop runs in a background Task.
-    public func start(socketPath: String, pidPath: String) throws {
+    /// Start the Hummingbird server on a Unix domain socket. Blocks until shutdown.
+    public func start(
+        socketPath: String,
+        pidPath: String,
+        onReady: @escaping @Sendable () async -> Void = {}
+    ) async throws {
         currentSocketPath = socketPath
         currentPidPath = pidPath
 
-        // Remove any stale socket file from a previous crashed server.
         try? FileManager.default.removeItem(atPath: socketPath)
-
-        // Create the socket.
-        let serverFd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard serverFd >= 0 else {
-            throw ServerError.socketCreateFailed(errno)
-        }
-
-        // Set SO_REUSEADDR so we can rebind quickly after a crash.
-        var yes: Int32 = 1
-        setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
-
-        // Build the sockaddr_un and bind.
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        // sun_path is a fixed-size C char array (104 bytes on Darwin).
-        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-            ptr.withMemoryRebound(to: CChar.self, capacity: 104) { cptr in
-                _ = strlcpy(cptr, socketPath, 104)
-            }
-        }
-        let bindResult = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sptr in
-                Darwin.bind(serverFd, sptr, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard bindResult == 0 else {
-            Darwin.close(serverFd)
-            throw ServerError.bindFailed(errno)
-        }
-
-        // Start listening.
-        guard Darwin.listen(serverFd, 128) == 0 else {
-            Darwin.close(serverFd)
-            throw ServerError.listenFailed(errno)
-        }
-
-        // Write PID file so clients can detect the running server.
         let pid = ProcessInfo.processInfo.processIdentifier
         try "\(pid)\n".write(toFile: pidPath, atomically: true, encoding: .utf8)
 
-        // Launch the accept loop as a background task.
-        let capturedFd = serverFd
-        acceptTask = Task {
-            await self.acceptLoop(serverFd: capturedFd)
-        }
+        let router = buildRouter()
+        let app = Application(
+            router: router,
+            configuration: .init(address: .unixDomainSocket(path: socketPath)),
+            onServerRunning: { _ in await onReady() }
+        )
+        try await app.runService()
     }
 
-    /// Shut down the server: cancel tasks, remove socket/PID files, invoke `onShutdown`.
+    // MARK: - Shutdown
+
     public func shutdown() {
         idleTimerTask?.cancel()
         idleTimerTask = nil
-        acceptTask?.cancel()
-        acceptTask = nil
 
         recordingTask?.cancel()
         recordingTask = nil
 
-        // Stop the StreamingCapture asynchronously since shutdown() is not async.
         if let sc = recordingCapture {
             recordingCapture = nil
             Task { try? await sc.stop() }
@@ -176,208 +97,86 @@ public actor GUIVisionServer {
             currentPidPath = nil
         }
 
-        // VNCCapture is an actor — disconnect asynchronously.
         let captureRef = capture
         Task { await captureRef.disconnect() }
-        sshClient?.disconnect()
         onShutdown()
     }
 
-    // MARK: - Accept loop
+    // MARK: - Router
 
-    private func acceptLoop(serverFd: Int32) async {
-        defer { Darwin.close(serverFd) }
+    public func buildRouter() -> Router<BasicRequestContext> {
+        let router = Router()
+        let server = self
 
-        while !Task.isCancelled {
-            // accept() is a blocking call; run it on a background thread so we
-            // don't tie up the Swift concurrency cooperative thread pool.
-            let clientFd = await withCheckedContinuation { (continuation: CheckedContinuation<Int32, Never>) in
-                let thread = Thread {
-                    let fd = Darwin.accept(serverFd, nil, nil)
-                    continuation.resume(returning: fd)
-                }
-                thread.start()
-            }
-
-            guard clientFd >= 0 else {
-                // accept() returned an error — socket was closed (shutdown).
-                return
-            }
-
-            // Handle each connection concurrently without blocking the accept loop.
-            Task {
-                await self.handleConnection(clientFd: clientFd)
-            }
+        // Health
+        router.get("/health") { _, _ in
+            await server.handleHealth()
         }
+
+        // Screen
+        router.get("/screen-size") { _, _ in
+            await server.handleScreenSize()
+        }
+        router.post("/screenshot") { request, _ in
+            await server.handleScreenshot(request)
+        }
+
+        // Input
+        router.post("/input/key") { request, _ in
+            await server.handleInputKey(request)
+        }
+        router.post("/input/key-down") { request, _ in
+            await server.handleInputKeyDown(request)
+        }
+        router.post("/input/key-up") { request, _ in
+            await server.handleInputKeyUp(request)
+        }
+        router.post("/input/type") { request, _ in
+            await server.handleInputType(request)
+        }
+        router.post("/input/click") { request, _ in
+            await server.handleInputClick(request)
+        }
+        router.post("/input/mouse-down") { request, _ in
+            await server.handleInputMouseDown(request)
+        }
+        router.post("/input/mouse-up") { request, _ in
+            await server.handleInputMouseUp(request)
+        }
+        router.post("/input/move") { request, _ in
+            await server.handleInputMove(request)
+        }
+        router.post("/input/scroll") { request, _ in
+            await server.handleInputScroll(request)
+        }
+        router.post("/input/drag") { request, _ in
+            await server.handleInputDrag(request)
+        }
+
+        // Recording
+        router.post("/record/start") { request, _ in
+            await server.handleRecordStart(request)
+        }
+        router.post("/record/stop") { _, _ in
+            await server.handleRecordStop()
+        }
+
+        // Stop
+        router.post("/stop") { _, _ in
+            await server.handleStop()
+        }
+
+        return router
     }
 
-    private func handleConnection(clientFd: Int32) async {
-        defer { Darwin.close(clientFd) }
+    // MARK: - Idle Timer
 
-        // Read in chunks, accumulating until we can successfully parse the request.
-        var buffer = Data()
-        let chunkSize = 65536
-
-        while true {
-            let chunk = await readChunk(fd: clientFd, maxBytes: chunkSize)
-            if let data = chunk {
-                buffer.append(data)
-            }
-
-            // Attempt to parse what we have accumulated so far.
-            if let request = try? HTTPParser.parseRequest(buffer) {
-                let response = await self.handleRequest(request)
-                let responseData = HTTPParser.serializeResponse(response)
-                await writeAllData(fd: clientFd, data: responseData)
-                return
-            }
-
-            // Hit EOF/error and still cannot parse — drop the connection silently.
-            if chunk == nil {
-                return
-            }
-        }
-    }
-
-    /// Read up to `maxBytes` bytes from `fd` on a background thread.
-    /// Returns `nil` on EOF or error.
-    private func readChunk(fd: Int32, maxBytes: Int) async -> Data? {
-        await withCheckedContinuation { continuation in
-            let thread = Thread {
-                var buf = [UInt8](repeating: 0, count: maxBytes)
-                let n = Darwin.read(fd, &buf, maxBytes)
-                if n > 0 {
-                    continuation.resume(returning: Data(buf[0..<n]))
-                } else {
-                    continuation.resume(returning: nil)
-                }
-            }
-            thread.start()
-        }
-    }
-
-    /// Write all bytes of `data` to `fd`, looping until complete or error.
-    private func writeAllData(fd: Int32, data: Data) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let thread = Thread {
-                data.withUnsafeBytes { rawBuf in
-                    guard let base = rawBuf.baseAddress else {
-                        continuation.resume()
-                        return
-                    }
-                    var offset = 0
-                    while offset < data.count {
-                        let n = Darwin.write(fd, base.advanced(by: offset), data.count - offset)
-                        if n <= 0 { break }
-                        offset += n
-                    }
-                }
-                continuation.resume()
-            }
-            thread.start()
-        }
-    }
-
-    // MARK: - Request routing
-
-    /// Single public entry point for all HTTP requests.
-    /// Resets the idle timer on every call (unless recording) and dispatches to the handler.
-    public func handleRequest(_ request: HTTPRequest) async -> HTTPResponse {
-        // Don't re-arm the idle timer while a recording is active.
+    private func armIdleTimerIfNeeded() {
         if recordingTask == nil {
             armIdleTimer()
         }
-
-        switch (request.method, request.path) {
-
-        // Health
-        case ("GET", "/health"):
-            return handleHealth()
-
-        // Screen size
-        case ("GET", "/screen-size"):
-            return await handleScreenSize()
-
-        // Screenshot
-        case ("POST", "/screenshot"):
-            return await handleScreenshot(request)
-
-        // Input: combined press
-        case ("POST", "/input/key"):
-            return await handleInputKey(request)
-        case ("POST", "/input/key-down"):
-            return await handleInputKeyDown(request)
-        case ("POST", "/input/key-up"):
-            return await handleInputKeyUp(request)
-        case ("POST", "/input/type"):
-            return await handleInputType(request)
-        case ("POST", "/input/click"):
-            return await handleInputClick(request)
-        case ("POST", "/input/mouse-down"):
-            return await handleInputMouseDown(request)
-        case ("POST", "/input/mouse-up"):
-            return await handleInputMouseUp(request)
-        case ("POST", "/input/move"):
-            return await handleInputMove(request)
-        case ("POST", "/input/scroll"):
-            return await handleInputScroll(request)
-        case ("POST", "/input/drag"):
-            return await handleInputDrag(request)
-
-        // SSH
-        case ("POST", "/ssh/exec"):
-            return handleSSHExec(request)
-        case ("POST", "/ssh/upload"):
-            return handleSSHUpload(request)
-        case ("POST", "/ssh/download"):
-            return handleSSHDownload(request)
-
-        // Recording
-        case ("POST", "/record/start"):
-            return await handleRecordStart(request)
-        case ("POST", "/record/stop"):
-            return await handleRecordStop()
-
-        // OCR: recognize text in the current framebuffer
-        case ("POST", "/ocr"):
-            return await handleOCR(request)
-
-        // Stop the server
-        case ("POST", "/stop"):
-            return handleStop()
-
-        // Wrong method on a known path — 405
-        case (_, "/health"),
-             (_, "/screen-size"),
-             (_, "/screenshot"),
-             (_, "/ocr"),
-             (_, "/input/key"),
-             (_, "/input/key-down"),
-             (_, "/input/key-up"),
-             (_, "/input/type"),
-             (_, "/input/click"),
-             (_, "/input/mouse-down"),
-             (_, "/input/mouse-up"),
-             (_, "/input/move"),
-             (_, "/input/scroll"),
-             (_, "/input/drag"),
-             (_, "/ssh/exec"),
-             (_, "/ssh/upload"),
-             (_, "/ssh/download"),
-             (_, "/record/start"),
-             (_, "/record/stop"),
-             (_, "/stop"):
-            return methodNotAllowed()
-
-        // Unknown path — 404
-        default:
-            return notFound()
-        }
     }
 
-    // MARK: - Idle timer
-
-    /// Cancel the current timer and start a fresh one.
     private func armIdleTimer() {
         idleTimerTask?.cancel()
         let timeout = idleTimeout
@@ -385,342 +184,238 @@ public actor GUIVisionServer {
             do {
                 try await Task.sleep(for: timeout)
                 self.shutdown()
-            } catch {
-                // Cancelled — a new request arrived; nothing to do.
-            }
+            } catch {}
         }
     }
 
     // MARK: - Handlers
 
-    private func handleHealth() -> HTTPResponse {
-        json(body: #"{"status":"ok"}"#)
+    func handleHealth() -> Response {
+        armIdleTimerIfNeeded()
+        return jsonResponse(#"{"status":"ok"}"#)
     }
 
-    private func handleScreenSize() async -> HTTPResponse {
+    func handleScreenSize() async -> Response {
+        armIdleTimerIfNeeded()
         guard let size = await capture.screenSize() else {
-            return json(statusCode: 503, body: #"{"error":"screen size unavailable — VNC not connected"}"#)
+            return jsonResponse(#"{"error":"screen size unavailable — VNC not connected"}"#, status: HTTPResponse.Status.serviceUnavailable)
         }
-        let w = Int(size.width)
-        let h = Int(size.height)
-        return json(body: "{\"width\":\(w),\"height\":\(h)}")
+        return jsonResponse("{\"width\":\(Int(size.width)),\"height\":\(Int(size.height))}")
     }
 
-    private func handleScreenshot(_ request: HTTPRequest) async -> HTTPResponse {
+    func handleScreenshot(_ request: Request) async -> Response {
+        armIdleTimerIfNeeded()
         do {
-            let region = try parseRegion(from: request)
+            let region = try await parseRegion(from: request)
             let pngData = try await capture.screenshot(region: region)
-            return HTTPResponse(statusCode: 200, contentType: "image/png", body: pngData)
+            return pngResponse(pngData)
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleOCR(_ request: HTTPRequest) async -> HTTPResponse {
-        struct OCRRequest: Decodable {
-            let find: String?
-            let minimumConfidence: Float?
-        }
-        do {
-            let findText: String?
-            let minConf: Float
-            if let body = request.body, !body.isEmpty {
-                let req = try JSONDecoder().decode(OCRRequest.self, from: body)
-                findText = req.find
-                minConf = req.minimumConfidence ?? 0.5
-            } else {
-                findText = nil
-                minConf = 0.5
-            }
-
-            let image = try await capture.captureImage()
-            var matches = TextRecognizer.recognizeText(in: image, minimumConfidence: minConf)
-
-            if let find = findText {
-                matches = matches.filter {
-                    $0.text.localizedCaseInsensitiveContains(find)
-                }
-            }
-
-            let data = try JSONEncoder().encode(matches)
-            return HTTPResponse(statusCode: 200, contentType: "application/json", body: data)
-        } catch {
-            return serverError(error)
-        }
-    }
-
-    private func handleInputKey(_ request: HTTPRequest) async -> HTTPResponse {
+    func handleInputKey(_ request: Request) async -> Response {
         struct KeyRequest: Decodable {
             let key: String
             let modifiers: [String]?
         }
+        armIdleTimerIfNeeded()
         do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(KeyRequest.self, from: body)
+            let req: KeyRequest = try await decodeBody(request)
             let platform = spec.platform
             let key = req.key
             let modifiers = req.modifiers ?? []
             try await capture.withConnection { conn in
                 try VNCInput.pressKey(key, modifiers: modifiers, platform: platform, connection: conn)
             }
-            return ok()
+            return okResponse()
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleInputKeyDown(_ request: HTTPRequest) async -> HTTPResponse {
+    func handleInputKeyDown(_ request: Request) async -> Response {
+        struct SingleKeyRequest: Decodable { let key: String }
+        armIdleTimerIfNeeded()
         do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(SingleKeyRequest.self, from: body)
+            let req: SingleKeyRequest = try await decodeBody(request)
             let platform = spec.platform
             let key = req.key
             try await capture.withConnection { conn in
                 try VNCInput.keyDown(key, platform: platform, connection: conn)
             }
-            return ok()
+            return okResponse()
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleInputKeyUp(_ request: HTTPRequest) async -> HTTPResponse {
+    func handleInputKeyUp(_ request: Request) async -> Response {
+        struct SingleKeyRequest: Decodable { let key: String }
+        armIdleTimerIfNeeded()
         do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(SingleKeyRequest.self, from: body)
+            let req: SingleKeyRequest = try await decodeBody(request)
             let platform = spec.platform
             let key = req.key
             try await capture.withConnection { conn in
                 try VNCInput.keyUp(key, platform: platform, connection: conn)
             }
-            return ok()
+            return okResponse()
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleInputType(_ request: HTTPRequest) async -> HTTPResponse {
+    func handleInputType(_ request: Request) async -> Response {
         struct TypeRequest: Decodable { let text: String }
+        armIdleTimerIfNeeded()
         do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(TypeRequest.self, from: body)
+            let req: TypeRequest = try await decodeBody(request)
             let text = req.text
             try await capture.withConnection { conn in
                 VNCInput.typeText(text, connection: conn)
             }
-            return ok()
+            return okResponse()
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleInputClick(_ request: HTTPRequest) async -> HTTPResponse {
+    func handleInputClick(_ request: Request) async -> Response {
         struct ClickRequest: Decodable {
-            let x: UInt16
-            let y: UInt16
-            let button: String?
-            let count: Int?
+            let x: UInt16; let y: UInt16
+            let button: String?; let count: Int?
         }
+        armIdleTimerIfNeeded()
         do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(ClickRequest.self, from: body)
-            let x = req.x; let y = req.y
-            let button = req.button ?? "left"
-            let count = req.count ?? 1
+            let req: ClickRequest = try await decodeBody(request)
             try await capture.withConnection { conn in
-                try VNCInput.click(x: x, y: y, button: button, count: count, connection: conn)
-            }
-            return ok()
-        } catch {
-            return serverError(error)
-        }
-    }
-
-    private func handleInputMouseDown(_ request: HTTPRequest) async -> HTTPResponse {
-        do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(MouseRequest.self, from: body)
-            let x = req.x; let y = req.y
-            let button = req.button ?? "left"
-            try await capture.withConnection { conn in
-                try VNCInput.mouseDown(x: x, y: y, button: button, connection: conn)
-            }
-            return ok()
-        } catch {
-            return serverError(error)
-        }
-    }
-
-    private func handleInputMouseUp(_ request: HTTPRequest) async -> HTTPResponse {
-        do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(MouseRequest.self, from: body)
-            let x = req.x; let y = req.y
-            let button = req.button ?? "left"
-            try await capture.withConnection { conn in
-                try VNCInput.mouseUp(x: x, y: y, button: button, connection: conn)
-            }
-            return ok()
-        } catch {
-            return serverError(error)
-        }
-    }
-
-    private func handleInputMove(_ request: HTTPRequest) async -> HTTPResponse {
-        struct MoveRequest: Decodable { let x: UInt16; let y: UInt16 }
-        do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(MoveRequest.self, from: body)
-            let x = req.x; let y = req.y
-            try await capture.withConnection { conn in
-                VNCInput.mouseMove(x: x, y: y, connection: conn)
-            }
-            return ok()
-        } catch {
-            return serverError(error)
-        }
-    }
-
-    private func handleInputScroll(_ request: HTTPRequest) async -> HTTPResponse {
-        struct ScrollRequest: Decodable {
-            let x: UInt16
-            let y: UInt16
-            let dx: Int
-            let dy: Int
-        }
-        do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(ScrollRequest.self, from: body)
-            let x = req.x; let y = req.y
-            let dx = req.dx; let dy = req.dy
-            try await capture.withConnection { conn in
-                VNCInput.scroll(x: x, y: y, deltaX: dx, deltaY: dy, connection: conn)
-            }
-            return ok()
-        } catch {
-            return serverError(error)
-        }
-    }
-
-    private func handleInputDrag(_ request: HTTPRequest) async -> HTTPResponse {
-        struct DragRequest: Decodable {
-            let fromX: UInt16
-            let fromY: UInt16
-            let toX: UInt16
-            let toY: UInt16
-            let button: String?
-            let steps: Int?
-        }
-        do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(DragRequest.self, from: body)
-            let fromX = req.fromX; let fromY = req.fromY
-            let toX = req.toX; let toY = req.toY
-            let button = req.button ?? "left"
-            let steps = req.steps ?? 10
-            try await capture.withConnection { conn in
-                try VNCInput.drag(
-                    fromX: fromX, fromY: fromY,
-                    toX: toX, toY: toY,
-                    button: button, steps: steps,
+                try VNCInput.click(
+                    x: req.x, y: req.y,
+                    button: req.button ?? "left",
+                    count: req.count ?? 1,
                     connection: conn
                 )
             }
-            return ok()
+            return okResponse()
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleSSHExec(_ request: HTTPRequest) -> HTTPResponse {
-        struct ExecRequest: Decodable {
-            let command: String
-            let timeout: Double?
+    func handleInputMouseDown(_ request: Request) async -> Response {
+        struct MouseRequest: Decodable {
+            let x: UInt16; let y: UInt16; let button: String?
         }
-        guard let ssh = sshClient else {
-            return badRequest("no SSH spec configured")
-        }
+        armIdleTimerIfNeeded()
         do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(ExecRequest.self, from: body)
-            let result = try ssh.exec(req.command, timeout: req.timeout ?? 30)
-            return json(body: "{\"exitCode\":\(result.exitCode),\"stdout\":\(escapeJSON(result.stdout)),\"stderr\":\(escapeJSON(result.stderr))}")
+            let req: MouseRequest = try await decodeBody(request)
+            try await capture.withConnection { conn in
+                try VNCInput.mouseDown(x: req.x, y: req.y, button: req.button ?? "left", connection: conn)
+            }
+            return okResponse()
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleSSHUpload(_ request: HTTPRequest) -> HTTPResponse {
-        struct UploadRequest: Decodable {
-            let localPath: String
-            let remotePath: String
-            let timeout: Double?
+    func handleInputMouseUp(_ request: Request) async -> Response {
+        struct MouseRequest: Decodable {
+            let x: UInt16; let y: UInt16; let button: String?
         }
-        guard let ssh = sshClient else {
-            return badRequest("no SSH spec configured")
-        }
+        armIdleTimerIfNeeded()
         do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(UploadRequest.self, from: body)
-            let result = try ssh.upload(localPath: req.localPath, remotePath: req.remotePath, timeout: req.timeout ?? 60)
-            return json(body: "{\"exitCode\":\(result.exitCode),\"stdout\":\(escapeJSON(result.stdout)),\"stderr\":\(escapeJSON(result.stderr))}")
+            let req: MouseRequest = try await decodeBody(request)
+            try await capture.withConnection { conn in
+                try VNCInput.mouseUp(x: req.x, y: req.y, button: req.button ?? "left", connection: conn)
+            }
+            return okResponse()
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleSSHDownload(_ request: HTTPRequest) -> HTTPResponse {
-        struct DownloadRequest: Decodable {
-            let remotePath: String
-            let localPath: String
-            let timeout: Double?
-        }
-        guard let ssh = sshClient else {
-            return badRequest("no SSH spec configured")
-        }
+    func handleInputMove(_ request: Request) async -> Response {
+        struct MoveRequest: Decodable { let x: UInt16; let y: UInt16 }
+        armIdleTimerIfNeeded()
         do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(DownloadRequest.self, from: body)
-            let result = try ssh.download(remotePath: req.remotePath, localPath: req.localPath, timeout: req.timeout ?? 60)
-            return json(body: "{\"exitCode\":\(result.exitCode),\"stdout\":\(escapeJSON(result.stdout)),\"stderr\":\(escapeJSON(result.stderr))}")
+            let req: MoveRequest = try await decodeBody(request)
+            try await capture.withConnection { conn in
+                VNCInput.mouseMove(x: req.x, y: req.y, connection: conn)
+            }
+            return okResponse()
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleRecordStart(_ request: HTTPRequest) async -> HTTPResponse {
+    func handleInputScroll(_ request: Request) async -> Response {
+        struct ScrollRequest: Decodable {
+            let x: UInt16; let y: UInt16; let dx: Int; let dy: Int
+        }
+        armIdleTimerIfNeeded()
+        do {
+            let req: ScrollRequest = try await decodeBody(request)
+            try await capture.withConnection { conn in
+                VNCInput.scroll(x: req.x, y: req.y, deltaX: req.dx, deltaY: req.dy, connection: conn)
+            }
+            return okResponse()
+        } catch {
+            return errorResponse(error)
+        }
+    }
+
+    func handleInputDrag(_ request: Request) async -> Response {
+        struct DragRequest: Decodable {
+            let fromX: UInt16; let fromY: UInt16
+            let toX: UInt16; let toY: UInt16
+            let button: String?; let steps: Int?
+        }
+        armIdleTimerIfNeeded()
+        do {
+            let req: DragRequest = try await decodeBody(request)
+            try await capture.withConnection { conn in
+                try VNCInput.drag(
+                    fromX: req.fromX, fromY: req.fromY,
+                    toX: req.toX, toY: req.toY,
+                    button: req.button ?? "left",
+                    steps: req.steps ?? 10,
+                    connection: conn
+                )
+            }
+            return okResponse()
+        } catch {
+            return errorResponse(error)
+        }
+    }
+
+    func handleRecordStart(_ request: Request) async -> Response {
         struct RecordRequest: Decodable {
-            let output: String
-            let fps: Int?
-            let duration: Int
-            let region: String?
+            let output: String; let fps: Int?; let duration: Int; let region: String?
         }
-
+        armIdleTimerIfNeeded()
         if recordingTask != nil {
-            return badRequest("recording already active")
+            return jsonResponse(#"{"error":"recording already active"}"#, status: HTTPResponse.Status.badRequest)
         }
-
         do {
-            guard let body = request.body else { return badRequest("missing request body") }
-            let req = try JSONDecoder().decode(RecordRequest.self, from: body)
-
+            let req: RecordRequest = try await decodeBody(request)
             let cappedDuration = min(req.duration, 300)
             guard cappedDuration > 0 else {
-                return badRequest("duration must be > 0")
+                return jsonResponse(#"{"error":"duration must be > 0"}"#, status: HTTPResponse.Status.badRequest)
             }
 
             let region = try parseRegionFromString(req.region)
 
-            // Determine video dimensions from region or full screen size.
             let (width, height): (Int, Int)
             if let r = region {
-                width = Int(r.width)
-                height = Int(r.height)
+                width = Int(r.width); height = Int(r.height)
             } else if let size = await capture.screenSize() {
-                width = Int(size.width)
-                height = Int(size.height)
+                width = Int(size.width); height = Int(size.height)
             } else {
-                return json(statusCode: 503, body: #"{"error":"cannot determine screen size — VNC not connected"}"#)
+                return jsonResponse(
+                    #"{"error":"cannot determine screen size — VNC not connected"}"#,
+                    status: HTTPResponse.Status.serviceUnavailable
+                )
             }
 
             let fps = req.fps ?? 30
@@ -729,77 +424,70 @@ public actor GUIVisionServer {
             try await sc.start(outputPath: req.output, config: config)
             self.recordingCapture = sc
 
-            let taskFPS = fps
-            let taskDuration = cappedDuration
             let captureSelf = self
             let captureSC = sc
-
             let task = Task.detached {
-                let interval = Duration.nanoseconds(1_000_000_000 / max(taskFPS, 1))
-                let deadline = ContinuousClock.now + .seconds(taskDuration)
+                let interval = Duration.nanoseconds(1_000_000_000 / max(fps, 1))
+                let deadline = ContinuousClock.now + .seconds(cappedDuration)
                 while !Task.isCancelled && ContinuousClock.now < deadline {
                     do {
                         let image = try await captureSelf.captureImage(region: region)
                         try await captureSC.appendFrame(image)
-                    } catch {
-                        // Frame capture failures are non-fatal — skip frame.
-                    }
+                    } catch {}
                     try? await Task.sleep(for: interval)
                 }
-                // Auto-stop when duration expires.
                 await captureSelf.finishRecording()
             }
             self.recordingTask = task
 
-            return ok()
+            return okResponse()
         } catch {
-            return serverError(error)
+            return errorResponse(error)
         }
     }
 
-    private func handleRecordStop() async -> HTTPResponse {
+    func handleRecordStop() async -> Response {
+        armIdleTimerIfNeeded()
         await finishRecording()
-        return ok()
+        return okResponse()
     }
 
-    /// Cancel recording task, stop StreamingCapture, re-arm idle timer.
-    private func finishRecording() async {
-        recordingTask?.cancel()
-        recordingTask = nil
-
-        if let sc = recordingCapture {
-            recordingCapture = nil
-            try? await sc.stop()
-        }
-
-        // Resume idle timer after recording ends.
-        armIdleTimer()
-    }
-
-    /// Expose captureImage to the detached recording task via actor isolation.
     fileprivate func captureImage(region: CGRect?) async throws -> CGImage {
         try await capture.captureImage(region: region)
     }
 
-    private func handleStop() -> HTTPResponse {
-        // Schedule shutdown after we return the response.
-        Task {
-            self.shutdown()
+    private func finishRecording() async {
+        recordingTask?.cancel()
+        recordingTask = nil
+        if let sc = recordingCapture {
+            recordingCapture = nil
+            try? await sc.stop()
         }
-        return json(body: #"{"ok":true}"#)
+        armIdleTimer()
     }
 
-    // MARK: - Body parsing helpers
+    func handleStop() -> Response {
+        Task { self.shutdown() }
+        return jsonResponse(#"{"ok":true}"#)
+    }
 
-    /// Parse an optional `region` field from JSON request body (format: `{"region":"x,y,w,h"}`).
-    private func parseRegion(from request: HTTPRequest) throws -> CGRect? {
+    // MARK: - Body Parsing
+
+    private func decodeBody<T: Decodable>(_ request: Request) async throws -> T {
+        let buffer = try await request.body.collect(upTo: 10_485_760)
+        let data = Data(buffer: buffer)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func parseRegion(from request: Request) async throws -> CGRect? {
         struct RegionRequest: Decodable { let region: String? }
-        guard let body = request.body, !body.isEmpty else { return nil }
-        let req = try JSONDecoder().decode(RegionRequest.self, from: body)
+        let buffer = try await request.body.collect(upTo: 1024)
+        guard buffer.readableBytes > 0 else { return nil }
+        let data = Data(buffer: buffer)
+        let req = try JSONDecoder().decode(RegionRequest.self, from: data)
         return try parseRegionFromString(req.region)
     }
 
-    /// Parse a `"x,y,w,h"` string into a CGRect, or return nil if input is nil.
     private func parseRegionFromString(_ regionString: String?) throws -> CGRect? {
         guard let regionString else { return nil }
         let parts = regionString.split(separator: ",").compactMap {
@@ -811,38 +499,36 @@ public actor GUIVisionServer {
         return CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3])
     }
 
-    // MARK: - Response helpers
+    // MARK: - Response Helpers
 
-    private func ok() -> HTTPResponse {
-        json(body: #"{"ok":true}"#)
-    }
-
-    private func json(statusCode: Int = 200, body: String) -> HTTPResponse {
-        HTTPResponse(
-            statusCode: statusCode,
-            contentType: "application/json",
-            body: Data(body.utf8)
+    nonisolated func jsonResponse(_ body: String, status: HTTPResponse.Status = .ok) -> Response {
+        Response(
+            status: status,
+            headers: [.contentType: "application/json"],
+            body: .init(byteBuffer: ByteBuffer(string: body))
         )
     }
 
-    private func notFound() -> HTTPResponse {
-        json(statusCode: 404, body: #"{"error":"not found"}"#)
+    nonisolated func okResponse() -> Response {
+        jsonResponse(#"{"ok":true}"#)
     }
 
-    private func methodNotAllowed() -> HTTPResponse {
-        json(statusCode: 405, body: #"{"error":"method not allowed"}"#)
+    nonisolated func pngResponse(_ data: Data) -> Response {
+        Response(
+            status: .ok,
+            headers: [.contentType: "image/png"],
+            body: .init(byteBuffer: ByteBuffer(bytes: Array(data)))
+        )
     }
 
-    private func badRequest(_ message: String) -> HTTPResponse {
-        json(statusCode: 400, body: "{\"error\":\(escapeJSON(message))}")
+    nonisolated func errorResponse(_ error: Error) -> Response {
+        jsonResponse(
+            "{\"error\":\(escapeJSON(error.localizedDescription))}",
+            status: .internalServerError
+        )
     }
 
-    private func serverError(_ error: Error) -> HTTPResponse {
-        json(statusCode: 500, body: "{\"error\":\(escapeJSON(error.localizedDescription))}")
-    }
-
-    /// Produce a JSON-safe quoted string.
-    private func escapeJSON(_ string: String) -> String {
+    nonisolated func escapeJSON(_ string: String) -> String {
         var escaped = ""
         escaped.reserveCapacity(string.utf16.count + 2)
         for scalar in string.unicodeScalars {
@@ -864,7 +550,7 @@ public actor GUIVisionServer {
     }
 }
 
-// MARK: - Region parse error
+// MARK: - Region Parse Error
 
 private enum RegionParseError: LocalizedError {
     case invalid(String)

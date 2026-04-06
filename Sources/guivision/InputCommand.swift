@@ -5,16 +5,11 @@ import GUIVisionAgentProtocol
 
 // MARK: - Window Resolution Helper
 
-/// Resolves the WindowInfo for the given filter string via SSH/AgentClient.
-/// Throws ValidationError if SSH is not configured or the window is not found.
-func resolveWindow(spec: ConnectionSpec, windowFilter: String) throws -> WindowInfo {
-    guard spec.ssh != nil else {
-        throw ValidationError("--window requires SSH to be configured (use --ssh or a connection spec with SSH)")
-    }
-    let sshClient = try SSHClient(connectionSpec: spec)
-    let agent = AgentClient(sshClient: sshClient)
-    let data = try agent.windows()
-    let response = try AgentClient.parseResponse(SnapshotResponse.self, from: data)
+/// Resolves the WindowInfo for the given filter string via the agent TCP service.
+/// Throws ValidationError if the agent is not configured or the window is not found.
+func resolveWindow(connection: ConnectionOptions, windowFilter: String) async throws -> WindowInfo {
+    let agent = try connection.resolveAgent()
+    let response = try await agent.windows()
     guard let window = response.windows.first(where: { win in
         (win.title?.localizedCaseInsensitiveContains(windowFilter) ?? false) ||
         win.appName.localizedCaseInsensitiveContains(windowFilter)
@@ -143,7 +138,7 @@ struct ClickCommand: AsyncParsableCommand {
 
         var offsetX = 0, offsetY = 0
         if let windowFilter = window {
-            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            let win = try await resolveWindow(connection: connection, windowFilter: windowFilter)
             offsetX = Int(win.position.x)
             offsetY = Int(win.position.y)
         }
@@ -176,7 +171,7 @@ struct MouseDownCommand: AsyncParsableCommand {
 
         var offsetX = 0, offsetY = 0
         if let windowFilter = window {
-            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            let win = try await resolveWindow(connection: connection, windowFilter: windowFilter)
             offsetX = Int(win.position.x)
             offsetY = Int(win.position.y)
         }
@@ -209,7 +204,7 @@ struct MouseUpCommand: AsyncParsableCommand {
 
         var offsetX = 0, offsetY = 0
         if let windowFilter = window {
-            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            let win = try await resolveWindow(connection: connection, windowFilter: windowFilter)
             offsetX = Int(win.position.x)
             offsetY = Int(win.position.y)
         }
@@ -239,7 +234,7 @@ struct MoveCommand: AsyncParsableCommand {
 
         var offsetX = 0, offsetY = 0
         if let windowFilter = window {
-            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            let win = try await resolveWindow(connection: connection, windowFilter: windowFilter)
             offsetX = Int(win.position.x)
             offsetY = Int(win.position.y)
         }
@@ -275,7 +270,7 @@ struct ScrollCommand: AsyncParsableCommand {
 
         var offsetX = 0, offsetY = 0
         if let windowFilter = window {
-            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            let win = try await resolveWindow(connection: connection, windowFilter: windowFilter)
             offsetX = Int(win.position.x)
             offsetY = Int(win.position.y)
         }
@@ -317,7 +312,7 @@ struct DragCommand: AsyncParsableCommand {
 
         var offsetX = 0, offsetY = 0
         if let windowFilter = window {
-            let win = try resolveWindow(spec: spec, windowFilter: windowFilter)
+            let win = try await resolveWindow(connection: connection, windowFilter: windowFilter)
             offsetX = Int(win.position.x)
             offsetY = Int(win.position.y)
         }

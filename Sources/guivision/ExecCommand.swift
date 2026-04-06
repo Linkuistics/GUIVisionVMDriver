@@ -2,20 +2,8 @@ import ArgumentParser
 import Foundation
 import GUIVisionVMDriver
 
-struct SSHCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "ssh",
-        abstract: "Execute commands and transfer files over SSH",
-        subcommands: [
-            ExecCommand.self,
-            UploadCommand.self,
-            DownloadCommand.self,
-        ]
-    )
-}
-
 struct ExecCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "exec", abstract: "Execute a remote command")
+    static let configuration = CommandConfiguration(commandName: "exec", abstract: "Execute a command on the VM via agent")
 
     @OptionGroup var connection: ConnectionOptions
 
@@ -23,9 +11,8 @@ struct ExecCommand: AsyncParsableCommand {
     var command: String
 
     mutating func run() async throws {
-        let spec = try connection.resolve()
-        let client = try await ServerClient.ensure(spec: spec)
-        let result = try await client.sshExec(command)
+        let agent = try connection.resolveAgent()
+        let result = try await agent.exec(command)
         if !result.stdout.isEmpty { print(result.stdout) }
         if !result.stderr.isEmpty { FileHandle.standardError.write(Data((result.stderr + "\n").utf8)) }
         if !result.succeeded {
@@ -35,7 +22,7 @@ struct ExecCommand: AsyncParsableCommand {
 }
 
 struct UploadCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "upload", abstract: "Upload a file")
+    static let configuration = CommandConfiguration(commandName: "upload", abstract: "Upload a file to the VM via agent")
 
     @OptionGroup var connection: ConnectionOptions
 
@@ -46,15 +33,15 @@ struct UploadCommand: AsyncParsableCommand {
     var remotePath: String
 
     mutating func run() async throws {
-        let spec = try connection.resolve()
-        let client = try await ServerClient.ensure(spec: spec)
-        try await client.sshUpload(localPath: localPath, remotePath: remotePath)
+        let agent = try connection.resolveAgent()
+        let data = try Data(contentsOf: URL(fileURLWithPath: localPath))
+        try await agent.upload(path: remotePath, content: data)
         print("Uploaded \(localPath) → \(remotePath)")
     }
 }
 
 struct DownloadCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "download", abstract: "Download a file")
+    static let configuration = CommandConfiguration(commandName: "download", abstract: "Download a file from the VM via agent")
 
     @OptionGroup var connection: ConnectionOptions
 
@@ -65,9 +52,9 @@ struct DownloadCommand: AsyncParsableCommand {
     var localPath: String
 
     mutating func run() async throws {
-        let spec = try connection.resolve()
-        let client = try await ServerClient.ensure(spec: spec)
-        try await client.sshDownload(remotePath: remotePath, localPath: localPath)
+        let agent = try connection.resolveAgent()
+        let data = try await agent.download(path: remotePath)
+        try data.write(to: URL(fileURLWithPath: localPath))
         print("Downloaded \(remotePath) → \(localPath)")
     }
 }

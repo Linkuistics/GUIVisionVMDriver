@@ -7,7 +7,10 @@ public enum AgentFormatter {
 
     /// Formats a SnapshotResponse (windows with element trees) into indented text.
     public static func formatSnapshot(_ data: Data) throws -> String {
-        let response = try JSONDecoder().decode(SnapshotResponse.self, from: data)
+        formatSnapshot(try JSONDecoder().decode(SnapshotResponse.self, from: data))
+    }
+
+    public static func formatSnapshot(_ response: SnapshotResponse) -> String {
         var lines: [String] = []
         for window in response.windows {
             lines.append(formatWindowLine(window))
@@ -22,14 +25,19 @@ public enum AgentFormatter {
 
     /// Formats a SnapshotResponse as a window list (no element trees).
     public static func formatWindows(_ data: Data) throws -> String {
-        let response = try JSONDecoder().decode(SnapshotResponse.self, from: data)
-        let lines = response.windows.map { formatWindowLine($0) }
-        return lines.joined(separator: "\n")
+        formatWindows(try JSONDecoder().decode(SnapshotResponse.self, from: data))
+    }
+
+    public static func formatWindows(_ response: SnapshotResponse) -> String {
+        response.windows.map { formatWindowLine($0) }.joined(separator: "\n")
     }
 
     /// Formats an ActionResponse into a concise success/failure message.
     public static func formatAction(_ data: Data) throws -> String {
-        let response = try JSONDecoder().decode(ActionResponse.self, from: data)
+        formatAction(try JSONDecoder().decode(ActionResponse.self, from: data))
+    }
+
+    public static func formatAction(_ response: ActionResponse) -> String {
         let prefix = response.success ? "OK" : "FAILED"
         if let message = response.message {
             return "\(prefix): \(message)"
@@ -48,7 +56,10 @@ public enum AgentFormatter {
 
     /// Formats an InspectResponse with element details and metadata.
     public static func formatInspect(_ data: Data) throws -> String {
-        let response = try JSONDecoder().decode(InspectResponse.self, from: data)
+        formatInspect(try JSONDecoder().decode(InspectResponse.self, from: data))
+    }
+
+    public static func formatInspect(_ response: InspectResponse) -> String {
         var lines: [String] = []
         lines.append(formatElementLine(response.element, indent: 0))
         if let bounds = response.bounds {
