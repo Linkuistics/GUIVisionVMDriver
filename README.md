@@ -100,7 +100,7 @@ Letters: `a`-`z` | Digits: `0`-`9` | Special: `return` `enter` `tab` `escape` `e
 VNC cannot change the display resolution. Use `--display WxH` when starting a VM:
 
 ```bash
-source scripts/macos/vm-start.sh --display 1920x1080                      # macOS
+source scripts/macos/vm-start.sh --display 1920x1080                      # macOS & Linux
 source scripts/macos/vm-start.sh --platform windows --display 1920x1080   # Windows
 ```
 
