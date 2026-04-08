@@ -1,0 +1,37 @@
+[project]
+name = "vision-pipeline"
+version = "0.1.0"
+description = "Composable vision pipeline for GUI screenshot analysis"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv.workspace]
+members = [
+    "common",
+    "ocr",
+]
+
+[tool.uv.sources]
+pipeline-common = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["common/tests", "ocr/tests"]
+markers = [
+    "unit: pure logic tests, no models or VMs",
+    "vision: detector accuracy tests against golden datasets",
+    "integration: full end-to-end tests against live VMs",
+    "slow: tests that take more than 10 seconds",
+]
+addopts = "-m 'not integration and not slow' --tb=short -q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+]
