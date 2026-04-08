@@ -251,13 +251,16 @@ swift test --package-path cli/macos
 
 ## Requirements
 
-- macOS 14+
-- Swift 6.0
-- [tart](https://tart.run) — for macOS and Linux VMs
-- [QEMU](https://www.qemu.org/) + [swtpm](https://github.com/stefanberger/swtpm) — for Windows VMs (`brew install qemu swtpm`)
-- SSH public key at `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` (for macOS/Linux golden image creation — Windows does not use SSH)
-- .NET 9+ SDK (for building Windows agent)
-- Python 3.12+ (ships with Ubuntu desktop — for Linux agent)
+| Requirement | Purpose | Install |
+|-------------|---------|---------|
+| macOS 14+ | Host OS | — |
+| Swift 6.0+ | Build CLI and macOS agent | Included with Xcode 16+, or `xcode-select --install` |
+| [tart](https://tart.run) | macOS and Linux VMs | `brew install cirruslabs/cli/tart` |
+| [QEMU](https://www.qemu.org/) | Windows VMs | `brew install qemu` |
+| [swtpm](https://github.com/stefanberger/swtpm) | TPM 2.0 emulation for Windows 11 | `brew install swtpm` |
+| .NET 9+ SDK | Build Windows agent | `brew install dotnet` |
+| Python 3.12+ | Linux agent (ships with Ubuntu desktop) | Not needed on host |
+| SSH key | macOS/Linux golden image creation | `ssh-keygen -t ed25519` (if `~/.ssh/id_ed25519.pub` doesn't exist) |
 
 ## LLM Integration
 
