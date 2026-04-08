@@ -209,42 +209,42 @@ swift test --package-path cli/macos
 
 ## Golden Image Contents
 
+All images share these properties:
+
+- **User** — `admin`, with autologin to desktop session
+- **guivision-agent** — HTTP service on port 8648, started automatically on boot
+- **Solid gray wallpaper** — clean background for screenshot analysis
+- **Notifications and widgets disabled** — no visual clutter during tests
+
 ### macOS (`guivision-golden-macos-tahoe`)
 
 - **macOS Tahoe** (Apple Silicon, via Cirrus Labs vanilla image)
-- **guivision-agent** — runs as LaunchAgent on port 8648, at `/usr/local/bin/guivision-agent`
-- **TCC accessibility grant** — agent has accessibility permission via system TCC database (with code signing requirement); requires SIP disable/enable cycle during image creation
-- **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin` (used during golden image creation)
-- **Xcode Command Line Tools** — `swift`, `clang`, `git`, `make`
-- **Homebrew** — `/opt/homebrew/bin/brew`
-- **Solid gray wallpaper** — clean background for screenshot analysis
-- **No desktop widgets** — no visual clutter
+- **Agent autostart** — LaunchAgent at `/usr/local/bin/guivision-agent`
+- **Accessibility** — TCC grant via system TCC database with code signing requirement (SIP disable/enable cycle during image creation)
+- **Package manager** — Homebrew (`/opt/homebrew/bin/brew`)
+- **Dev tools** — Xcode Command Line Tools (`swift`, `clang`, `git`, `make`)
+- **SSH key auth** — host's public key in `authorized_keys` (used during golden image creation)
 - **Session restore disabled** — apps don't reopen old windows
-- **SIP enabled** — standard security posture (SIP is temporarily disabled during image creation to write the TCC grant, then re-enabled)
+- **SIP enabled** — standard security posture after image creation
 
 ### Linux (`guivision-golden-linux-24.04`)
 
 - **Ubuntu 24.04 Desktop** (ARM64, via Cirrus Labs vanilla image + `ubuntu-desktop-minimal`)
-- **guivision-agent** — runs as systemd user service on port 8648
-- **AT-SPI2 accessibility enabled** — `python3-pyatspi` for accessibility bindings
-- **xdotool** — window management fallback
-- **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin` (used during golden image creation)
-- **GDM autologin** — boots directly to desktop as `admin`
+- **Agent autostart** — systemd user service
+- **Accessibility** — AT-SPI2 enabled, `python3-pyatspi` for bindings, `xdotool` for window management fallback
+- **Package manager** — apt
+- **SSH key auth** — host's public key in `authorized_keys` (used during golden image creation)
 - **Silent boot** — GRUB hidden, Plymouth splash, no text-mode console output
-- **Solid gray wallpaper** — clean background for screenshot analysis
 - **Screen lock and blanking disabled** — no interruptions during tests
-- **Notifications disabled** — no visual clutter
 - **NetworkManager** — configured via netplan (replaces systemd-networkd from base image)
 
 ### Windows (`guivision-golden-windows-11`)
 
 - **Windows 11 Pro** (ARM64, installed from Microsoft evaluation ISO via QEMU)
-- **guivision-agent** — runs as Task Scheduler logon task on port 8648
-- **Chocolatey** — package manager for Windows dependencies
+- **Agent autostart** — Task Scheduler logon task
+- **Accessibility** — UI Automation via FlaUI (built into Windows)
+- **Package manager** — Chocolatey
 - **No SSH** — agent binary installed from autounattend media; all communication via agent HTTP
-- **Autologin** — boots directly to desktop as `admin`
-- **Solid gray wallpaper** — applied via Win32 API in desktop session
-- **Widgets, search box, notifications disabled** — clean taskbar for vision pipeline
 - **First-logon animation disabled** — clones boot straight to desktop without OOBE
 - **UEFI + TPM 2.0** — standard Windows 11 secure boot via swtpm
 - **VirtIO networking** — virtio-net-pci driver installed during setup
