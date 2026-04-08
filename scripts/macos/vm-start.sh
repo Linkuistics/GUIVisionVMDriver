@@ -8,6 +8,7 @@
 #   --platform PLATFORM  Target platform: macos|linux|windows (default: macos)
 #   --base IMAGE         Base image to clone from (default: platform-specific)
 #   --name NAME          VM name / clone identifier (default: guivision-default)
+#   --display WxH        Display resolution (e.g., 1920x1080; default: VM default)
 #   --viewer             Open VNC viewer after boot
 #   --no-ssh             Skip waiting for SSH
 #
@@ -50,6 +51,7 @@ set -euo pipefail
 _PLATFORM="macos"
 _BASE=""
 _NAME="guivision-default"
+_DISPLAY=""
 _VIEWER=false
 _SSH=true
 _SSH_USER="admin"
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
         --platform) _PLATFORM="$2"; shift 2 ;;
         --base)     _BASE="$2"; shift 2 ;;
         --name)     _NAME="$2"; shift 2 ;;
+        --display)  _DISPLAY="$2"; shift 2 ;;
         --viewer)   _VIEWER=true; shift ;;
         --no-ssh)   _SSH=false; shift ;;
         *)          echo "Unknown option: $1"; return 1 2>/dev/null || exit 1 ;;
@@ -103,6 +106,12 @@ if [[ "$_TOOL" == "tart" ]]; then
     # Clone
     echo "Cloning $_BASE → $_NAME..."
     tart clone "$_BASE" "$_NAME"
+
+    # Set display resolution if requested
+    if [[ -n "$_DISPLAY" ]]; then
+        echo "Setting display to $_DISPLAY..."
+        tart set "$_NAME" --display "$_DISPLAY"
+    fi
 
     # Start in background, capture output for VNC URL
     _VNC_OUTPUT=$(mktemp)
@@ -295,6 +304,14 @@ elif [[ "$_TOOL" == "qemu" ]]; then
     _VNC_PASS="guivision"
     _MONITOR_SOCK="$_CLONE_DIR/monitor.sock"
 
+    # Build display device — virtio-gpu-pci supports resolution params
+    _GPU_DEVICE="virtio-gpu-pci"
+    if [[ -n "$_DISPLAY" ]]; then
+        _XRES="${_DISPLAY%x*}"
+        _YRES="${_DISPLAY#*x}"
+        _GPU_DEVICE="virtio-gpu-pci,xres=$_XRES,yres=$_YRES"
+    fi
+
     echo "Booting QEMU VM..."
     qemu-system-aarch64 \
         -machine virt,highmem=on,gic-version=3 \
@@ -309,7 +326,7 @@ elif [[ "$_TOOL" == "qemu" ]]; then
         -device "tpm-tis-device,tpmdev=tpm0" \
         -drive "file=$_CLONE_QCOW2,if=none,id=hd0,format=qcow2" \
         -device "nvme,drive=hd0,serial=boot,bootindex=0" \
-        -device "ramfb" \
+        -device "$_GPU_DEVICE" \
         -device "qemu-xhci" \
         -device "usb-kbd" \
         -device "usb-tablet" \

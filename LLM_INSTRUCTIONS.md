@@ -18,9 +18,10 @@ Each VM runs an agent HTTP server on port 8648. The host CLI (`guivision`) talks
 ### Start a VM
 
 ```bash
-source scripts/macos/vm-start.sh                          # macOS (default)
-source scripts/macos/vm-start.sh --platform linux          # Linux
-source scripts/macos/vm-start.sh --platform windows        # Windows
+source scripts/macos/vm-start.sh                                          # macOS (default)
+source scripts/macos/vm-start.sh --platform linux                         # Linux
+source scripts/macos/vm-start.sh --platform windows                       # Windows
+source scripts/macos/vm-start.sh --platform windows --display 1920x1080   # Windows at 1920x1080
 ```
 
 Sets: `GUIVISION_VNC`, `GUIVISION_VNC_PASSWORD`, `GUIVISION_AGENT`, `GUIVISION_PLATFORM`
@@ -230,6 +231,7 @@ scripts/macos/vm-create-golden-windows.sh --iso ~/Downloads/Win11_ARM64.iso
 - **Use `find-text` for visual elements**: OCR finds rendered text that accessibility can't see (images, canvas, custom-drawn UI)
 - **Sleep after input**: VMs need time to process events — `sleep 1` after keyboard/mouse, `sleep 5` after launching apps
 - **Multi-VM networking**: tart VMs share a network bridge; QEMU uses NAT with port forwarding. tart VMs can reach each other by IP; QEMU VMs need explicit port forwards
+- **Display resolution**: `--display 1920x1080` sets VM display size. Works for all platforms (tart uses `tart set --display`, QEMU uses `virtio-gpu-pci` xres/yres)
 - **Platform modifiers**: `--platform macos` maps `cmd` to macOS Command key; `--platform windows` maps `cmd` to Ctrl
 - **Connection caching**: The first `guivision` command auto-starts a background VNC server process. Subsequent commands reuse it. Idle timeout: 5 minutes.
 - **Agent is the primary channel**: Use agent exec instead of SSH. VNC is for visual verification and keyboard/mouse when accessibility can't target an element.
