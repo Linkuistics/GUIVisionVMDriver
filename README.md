@@ -194,7 +194,7 @@ swift test --package-path cli/macos
 |--------|-----------|--------------|
 | `scripts/macos/vm-create-golden-macos.sh` | `./scripts/macos/vm-create-golden-macos.sh` | Create macOS golden VM image (tart) with agent + Xcode + Homebrew |
 | `scripts/macos/vm-create-golden-linux.sh` | `./scripts/macos/vm-create-golden-linux.sh` | Create Linux golden VM image (tart) with agent + dev tools |
-| `scripts/macos/vm-create-golden-windows.sh` | `./scripts/macos/vm-create-golden-windows.sh --iso <path>` | Create Windows golden VM image (QEMU) with agent; requires downloaded ISO on first run |
+| `scripts/macos/vm-create-golden-windows.sh` | `./scripts/macos/vm-create-golden-windows.sh --iso <path>` | Create Windows golden VM image (QEMU) with agent + Chocolatey; requires downloaded ISO on first run |
 | `scripts/macos/vm-start.sh` | `source scripts/macos/vm-start.sh` | Start VM, set env vars in current shell |
 | `scripts/macos/vm-stop.sh` | `source scripts/macos/vm-stop.sh` | Stop VM, clean env vars |
 
