@@ -11,7 +11,7 @@ A Swift library and CLI for interacting with machines via VNC and in-VM accessib
 - Individual key-down/key-up and mouse-down/mouse-up for fine-grained control
 - Send mouse events: click, double-click, right-click, drag, scroll
 - Type text with automatic handling of uppercase and shifted symbols
-- Track cursor shape and position
+
 
 **In-VM agent communication** (HTTP on port 8648):
 - Accessibility tree access — query window lists, element snapshots, element inspection
