@@ -2,7 +2,8 @@
 <!-- Unattended answer file for Windows 11 ARM64 evaluation ISO.
      Windows Setup reads this from removable media (USB drive) automatically.
      Partitions the disk, installs Windows, creates admin/admin account,
-     skips OOBE, and installs OpenSSH Server on first login. -->
+     skips OOBE, installs the guivision-agent TCP service on first logon,
+     and installs Chocolatey as a package manager. No SSH. -->
 <unattend xmlns="urn:schemas-microsoft-com:unattend"
           xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
 
@@ -136,7 +137,14 @@
         </component>
     </settings>
 
-    <!-- Specialize: set computer name, bypass OOBE network requirement -->
+    <!-- Specialize: bypass OOBE network requirement, write SetupComplete.cmd
+         inline. SetupComplete.cmd runs after OOBE as SYSTEM — it installs the
+         VirtIO network driver, copies agent + scripts from the USB media,
+         applies registry tweaks, and registers the agent as a logon task.
+         The script is built via echo commands (not copied from USB) because
+         USB drive letters are not reliably assigned during the specialize pass.
+         In echo context: %%VAR%% becomes %VAR% in the file (correct for batch).
+         Individual if-exist lines avoid the for-loop %/%%d escaping problem. -->
     <settings pass="specialize">
         <component name="Microsoft-Windows-Deployment"
                    processorArchitecture="arm64"
@@ -148,39 +156,109 @@
                     <Order>1</Order>
                     <Path>reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
                 </RunSynchronousCommand>
-                <!-- Create SetupComplete.cmd to install OpenSSH after OOBE.
-                     dism /online hangs during specialize (servicing stack not ready),
-                     so we defer it to SetupComplete.cmd which runs after OOBE
-                     when the OS is fully online. -->
                 <RunSynchronousCommand wcm:action="add">
                     <Order>2</Order>
                     <Description>Create SetupComplete scripts directory</Description>
                     <Path>cmd /c mkdir C:\Windows\Setup\Scripts</Path>
                 </RunSynchronousCommand>
+                <!-- Write SetupComplete.cmd line by line via echo commands.
+                     Each line is self-contained (no batch variables) to avoid
+                     cmd.exe trailing-space and %%-escaping issues with >>. -->
                 <RunSynchronousCommand wcm:action="add">
                     <Order>3</Order>
-                    <Description>Write SetupComplete.cmd — install VirtIO network driver + OpenSSH</Description>
-                    <Path>cmd /c echo for %%d in (C D E F G H) do if exist %%d:\drivers\netkvm.inf pnputil /add-driver %%d:\drivers\netkvm.inf /install &gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                    <Path>cmd /c echo @echo off &gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
                 </RunSynchronousCommand>
+                <!-- Install VirtIO network driver from whichever drive has it -->
                 <RunSynchronousCommand wcm:action="add">
                     <Order>4</Order>
-                    <Path>cmd /c echo timeout /t 5 /nobreak &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                    <Path>cmd /c echo if exist D:\drivers\netkvm.inf pnputil /add-driver D:\drivers\netkvm.inf /install &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
                 </RunSynchronousCommand>
                 <RunSynchronousCommand wcm:action="add">
                     <Order>5</Order>
-                    <Path>cmd /c echo dism /online /add-capability /capabilityname:OpenSSH.Server~~~~0.0.1.0 /norestart &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                    <Path>cmd /c echo if exist E:\drivers\netkvm.inf pnputil /add-driver E:\drivers\netkvm.inf /install &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
                 </RunSynchronousCommand>
                 <RunSynchronousCommand wcm:action="add">
                     <Order>6</Order>
-                    <Path>cmd /c echo sc config sshd start= auto &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                    <Path>cmd /c echo if exist F:\drivers\netkvm.inf pnputil /add-driver F:\drivers\netkvm.inf /install &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
                 </RunSynchronousCommand>
+                <!-- Copy agent binary from USB media (self-contained: no variables) -->
                 <RunSynchronousCommand wcm:action="add">
                     <Order>7</Order>
-                    <Path>cmd /c echo net start sshd &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                    <Path>cmd /c echo mkdir C:\guivision &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
                 </RunSynchronousCommand>
                 <RunSynchronousCommand wcm:action="add">
                     <Order>8</Order>
-                    <Path>cmd /c echo netsh advfirewall firewall add rule name=sshd dir=in action=allow protocol=tcp localport=22 &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                    <Path>cmd /c echo if exist D:\guivision-agent.exe copy /y D:\guivision-agent.exe C:\guivision\guivision-agent.exe &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>9</Order>
+                    <Path>cmd /c echo if exist E:\guivision-agent.exe copy /y E:\guivision-agent.exe C:\guivision\guivision-agent.exe &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>10</Order>
+                    <Path>cmd /c echo if exist F:\guivision-agent.exe copy /y F:\guivision-agent.exe C:\guivision\guivision-agent.exe &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>11</Order>
+                    <Path>cmd /c echo if exist G:\guivision-agent.exe copy /y G:\guivision-agent.exe C:\guivision\guivision-agent.exe &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>12</Order>
+                    <Path>cmd /c echo if exist H:\guivision-agent.exe copy /y H:\guivision-agent.exe C:\guivision\guivision-agent.exe &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <!-- Copy desktop-setup script from USB media -->
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>13</Order>
+                    <Path>cmd /c echo if exist D:\desktop-setup.ps1 copy /y D:\desktop-setup.ps1 C:\Windows\Setup\Scripts\desktop-setup.ps1 &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>14</Order>
+                    <Path>cmd /c echo if exist E:\desktop-setup.ps1 copy /y E:\desktop-setup.ps1 C:\Windows\Setup\Scripts\desktop-setup.ps1 &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>15</Order>
+                    <Path>cmd /c echo if exist F:\desktop-setup.ps1 copy /y F:\desktop-setup.ps1 C:\Windows\Setup\Scripts\desktop-setup.ps1 &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>16</Order>
+                    <Path>cmd /c echo if exist G:\desktop-setup.ps1 copy /y G:\desktop-setup.ps1 C:\Windows\Setup\Scripts\desktop-setup.ps1 &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>17</Order>
+                    <Path>cmd /c echo if exist H:\desktop-setup.ps1 copy /y H:\desktop-setup.ps1 C:\Windows\Setup\Scripts\desktop-setup.ps1 &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <!-- Firewall rule, scheduled task, RunOnce, registry tweaks -->
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>18</Order>
+                    <Path>cmd /c echo netsh advfirewall firewall add rule name="GUIVision Agent" dir=in action=allow protocol=tcp localport=8648 &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>19</Order>
+                    <Path>cmd /c echo schtasks /create /tn "GUIVisionAgent" /tr "C:\guivision\guivision-agent.exe" /sc onlogon /ru admin /f &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>20</Order>
+                    <Path>cmd /c echo reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" /v DesktopSetup /t REG_SZ /d "powershell -ExecutionPolicy Bypass -File C:\Windows\Setup\Scripts\desktop-setup.ps1" /f &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>21</Order>
+                    <Path>cmd /c echo reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search" /v AllowCortana /t REG_DWORD /d 0 /f &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>22</Order>
+                    <Path>cmd /c echo reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>23</Order>
+                    <Path>cmd /c echo reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v AUOptions /t REG_DWORD /d 2 /f &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>24</Order>
+                    <Path>cmd /c echo reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableFirstLogonAnimation /t REG_DWORD /d 0 /f &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>25</Order>
+                    <Path>cmd /c echo reg add "HKLM\SOFTWARE\Policies\Microsoft\Dsh" /v AllowNewsAndInterests /t REG_DWORD /d 0 /f &gt;&gt; C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
                 </RunSynchronousCommand>
             </RunSynchronous>
         </component>
@@ -193,7 +271,7 @@
         </component>
     </settings>
 
-    <!-- OOBE: skip all prompts, create admin user, install OpenSSH -->
+    <!-- OOBE: skip all prompts, create admin user, install Chocolatey -->
     <settings pass="oobeSystem">
         <component name="Microsoft-Windows-International-Core"
                    processorArchitecture="arm64"
@@ -238,10 +316,22 @@
                 <Username>admin</Username>
             </AutoLogon>
             <FirstLogonCommands>
+                <!-- Start the agent immediately (background) so the host can
+                     communicate before Chocolatey finishes. Task Scheduler
+                     handles subsequent boots. -->
                 <SynchronousCommand wcm:action="add">
                     <Order>1</Order>
-                    <CommandLine>net start sshd</CommandLine>
-                    <Description>Ensure OpenSSH Server is running</Description>
+                    <CommandLine>cmd /c start "" /b C:\guivision\guivision-agent.exe</CommandLine>
+                    <Description>Start guivision-agent in background</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <!-- Install Chocolatey — needs network (VirtIO driver installed
+                     by SetupComplete.cmd before first logon). Tests need choco
+                     for installing runtimes (Racket, Haskell, OCaml, jq, etc.) -->
+                <SynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <CommandLine>cmd /c powershell -NoProfile -ExecutionPolicy Bypass -Command "[System.Net.ServicePointManager]::SecurityProtocol = 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))"</CommandLine>
+                    <Description>Install Chocolatey package manager</Description>
                     <RequiresUserInput>false</RequiresUserInput>
                 </SynchronousCommand>
             </FirstLogonCommands>

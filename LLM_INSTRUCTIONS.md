@@ -1,341 +1,235 @@
 # GUIVisionVMDriver — LLM Instructions
 
-This document tells you everything you need to use the `guivision` CLI and GUIVisionVMDriver library to interact with a machine via VNC and SSH.
+## Architecture
 
-## What This Project Provides
+Two independent channels to each VM:
 
-`guivision` is a CLI tool (and Swift library) that connects to a machine over VNC to capture screenshots, send keyboard/mouse input, and record video. It also provides SSH command execution and file transfer. It does not manage VMs — you provide the VNC/SSH endpoints.
+| Channel | Transport | Purpose | Endpoint |
+|---------|-----------|---------|----------|
+| **VNC** | RFB protocol | Screenshots, keyboard/mouse input, video recording | `--vnc host:port` |
+| **Agent** | HTTP/1.1 JSON on port 8648 | Accessibility tree, UI actions, exec, file transfer, shutdown | `--agent host:port` |
 
-## CLI Reference
+Each VM runs an agent HTTP server on port 8648. The host CLI (`guivision`) talks to both channels. VNC is the visual/input channel; agent is the semantic/exec channel.
 
-Every command requires at minimum `--vnc host:port`. Add `--platform macos|windows|linux` for correct modifier key mapping (defaults to macOS). SSH commands require `--ssh user@host[:port]`.
+**Platform agents:** macOS (Swift/Hummingbird), Windows (C#/ASP.NET), Linux (Python/http.server). All expose identical HTTP endpoints.
 
-### Display
+## Quick Reference
+
+### Start a VM
 
 ```bash
-guivision screen-size --vnc host:port
-# Output: 1920x1080
+source scripts/macos/vm-start.sh                          # macOS (default)
+source scripts/macos/vm-start.sh --platform linux          # Linux
+source scripts/macos/vm-start.sh --platform windows        # Windows
 ```
 
-VNC cannot change display resolution. For tart VMs: `tart set <vm> --display WIDTHxHEIGHT`
+Sets: `GUIVISION_VNC`, `GUIVISION_VNC_PASSWORD`, `GUIVISION_AGENT`, `GUIVISION_PLATFORM`
 
-### Screenshots
+### Multi-VM Setup
+
+Run multiple VMs simultaneously — each gets its own endpoints:
 
 ```bash
-guivision screenshot --vnc host:port -o file.png
-guivision screenshot --vnc host:port --region x,y,width,height -o file.png
+source scripts/macos/vm-start.sh --name vm1                           # macOS
+MAC_VNC="$GUIVISION_VNC" MAC_AGENT="$GUIVISION_AGENT"
+
+source scripts/macos/vm-start.sh --platform linux --name vm2          # Linux
+LINUX_VNC="$GUIVISION_VNC" LINUX_AGENT="$GUIVISION_AGENT"
+
+source scripts/macos/vm-start.sh --platform windows --name vm3        # Windows
+WIN_VNC="$GUIVISION_VNC" WIN_AGENT="$GUIVISION_AGENT"
+
+# Now interact with each independently:
+guivision exec --agent "$MAC_AGENT" "uname -a"
+guivision exec --agent "$LINUX_AGENT" "uname -a"
+guivision exec --agent "$WIN_AGENT" "systeminfo | findstr /B /C:\"OS Name\""
+
+# VMs on the same tart network can reach each other via IP:
+MAC_IP=$(echo "$MAC_AGENT" | cut -d: -f1)
+guivision exec --agent "$LINUX_AGENT" "curl -sf http://$MAC_IP:8648/health"
+```
+
+### Stop VMs
+
+```bash
+source scripts/macos/vm-stop.sh            # stops the last-started VM
+source scripts/macos/vm-stop.sh --name vm1 # stops a specific VM
+```
+
+## Agent Commands
+
+### Exec & File Transfer
+
+```bash
+guivision exec --agent host:port "command"                  # run shell command
+guivision upload --agent host:port localpath remotepath      # upload file
+guivision download --agent host:port remotepath localpath    # download file
+```
+
+### Accessibility
+
+```bash
+guivision agent health --agent host:port                    # check agent + accessibility status
+guivision agent windows --agent host:port                   # list all windows
+guivision agent snapshot --agent host:port [options]        # accessibility tree snapshot
+guivision agent inspect --agent host:port [query]           # detailed element properties + bounds
+```
+
+Snapshot options: `--mode interact|layout|full`, `--window FILTER`, `--role ROLE`, `--label TEXT`, `--depth N`
+
+### UI Actions
+
+```bash
+guivision agent press --agent host:port [query]             # press/click element
+guivision agent set-value --agent host:port [query] --value TEXT  # set text/slider value
+guivision agent focus --agent host:port [query]             # focus element
+guivision agent show-menu --agent host:port [query]         # open context menu
+```
+
+Query parameters: `--role ROLE`, `--label TEXT`, `--window FILTER`, `--id ID`, `--index N`
+
+### Window Management
+
+```bash
+guivision agent window-focus --agent host:port --window FILTER
+guivision agent window-resize --agent host:port --window FILTER --width W --height H
+guivision agent window-move --agent host:port --window FILTER --x X --y Y
+guivision agent window-close --agent host:port --window FILTER
+guivision agent window-minimize --agent host:port --window FILTER
+guivision agent wait --agent host:port [--timeout SECONDS]
+```
+
+## VNC Commands
+
+### Screenshots & Display
+
+```bash
+guivision screen-size --vnc host:port                       # "1920x1080"
+guivision screenshot --vnc host:port -o file.png            # full screen
+guivision screenshot --vnc host:port --region x,y,w,h -o file.png  # cropped
 ```
 
 ### Keyboard
 
 ```bash
-# Press and release a key (with optional modifiers)
-guivision input key --vnc host:port KEYNAME
-guivision input key --vnc host:port KEYNAME --modifiers mod1,mod2
-
-# Hold/release a key separately
-guivision input key-down --vnc host:port KEYNAME
-guivision input key-up --vnc host:port KEYNAME
-
-# Type a string (handles uppercase and shifted symbols automatically)
-guivision input type --vnc host:port "text to type"
+guivision input key --vnc host:port KEYNAME [--modifiers mod1,mod2]
+guivision input key-down --vnc host:port KEYNAME            # hold key
+guivision input key-up --vnc host:port KEYNAME              # release key
+guivision input type --vnc host:port "text to type"         # type string
 ```
 
-**Key names:** `a`-`z`, `0`-`9`, `return`, `enter`, `tab`, `escape`, `esc`, `space`, `delete`, `backspace`, `forwarddelete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `f1`-`f12`
-
-**Modifier names:** `cmd`, `command`, `alt`, `option`, `shift`, `ctrl`, `control`
-
-**Platform modifier mapping:**
-- macOS: `cmd` sends XK_Alt_L (maps to Cmd on Virtualization.framework VNC), `alt` sends XK_Meta_L
-- Windows/Linux: `cmd` sends Ctrl, `alt` sends Alt, `super`/`win` sends Super
+Keys: `a`-`z` `0`-`9` `return` `tab` `escape` `space` `delete` `backspace` `forwarddelete` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `f1`-`f12`
+Modifiers: `cmd` `alt` `shift` `ctrl` — mapped per `--platform`
 
 ### Mouse
 
 ```bash
-# Click (default: left button, single click)
-guivision input click --vnc host:port X Y
-guivision input click --vnc host:port X Y --button right
-guivision input click --vnc host:port X Y --button left --count 2
-
-# Press/release button separately
+guivision input click --vnc host:port X Y [--button right] [--count 2]
 guivision input mouse-down --vnc host:port X Y [--button left|right|middle]
-guivision input mouse-up --vnc host:port X Y [--button left|right|middle]
-
-# Move cursor
+guivision input mouse-up --vnc host:port X Y
 guivision input move --vnc host:port X Y
-
-# Scroll (negative dy = scroll up, positive = down)
-guivision input scroll --vnc host:port X Y --dx 0 --dy -3
-
-# Drag with interpolation
-guivision input drag --vnc host:port fromX fromY toX toY [--button left] [--steps 10]
+guivision input scroll --vnc host:port X Y --dy -3          # negative = up
+guivision input drag --vnc host:port fromX fromY toX toY
 ```
 
-**Mouse buttons:** `left`, `right`, `middle`, `center`
-
-### OCR Text Recognition
+### OCR
 
 ```bash
-# Find text on the VNC screen (returns JSON array of matches with coordinates)
-guivision find-text --vnc host:port "search text"
-
-# Wait up to N seconds for text to appear (polls every 500ms)
-guivision find-text --vnc host:port "Loading..." --timeout 30
-
-# Return all recognized text on screen
-guivision find-text --vnc host:port
+guivision find-text --vnc host:port "search text"           # find text, returns JSON with coords
+guivision find-text --vnc host:port "Loading" --timeout 30  # poll until found
+guivision find-text --vnc host:port                         # all text on screen
 ```
 
-Output is a JSON array:
-```json
-[{"text":"Terminal","x":248.0,"y":91.0,"width":55.0,"height":12.0,"confidence":0.95}]
-```
-
-Uses Apple Vision framework (`VNRecognizeTextRequest` with `.accurate` recognition level). Coordinates are in pixels with top-left origin, matching VNC input coordinates — click at `x + width/2`, `y + height/2` to hit the center of the text.
-
-### SSH
-
-```bash
-# Execute a command (stdout to stdout, stderr to stderr, exit code propagated)
-guivision ssh exec --ssh user@host "command"
-
-# File transfer
-guivision ssh upload --ssh user@host localpath remotepath
-guivision ssh download --ssh user@host remotepath localpath
-```
+Returns: `[{"text":"Terminal","x":248,"y":91,"width":55,"height":12,"confidence":0.95}]`
+Click center: `x + width/2`, `y + height/2`
 
 ### Video Recording
 
 ```bash
-guivision record --vnc host:port -o recording.mp4 --fps 30 --duration 10
-guivision record --vnc host:port -o recording.mp4 --duration 0  # until Ctrl+C
-guivision record --vnc host:port --region x,y,w,h -o cropped.mp4
+guivision record --vnc host:port -o out.mp4 --fps 30 --duration 10
 ```
 
-### Connection Spec JSON
-
-Instead of individual flags, pass `--connect spec.json`:
+## Connection Spec JSON
 
 ```json
-{
-    "vnc": { "host": "localhost", "port": 5900, "password": "secret" },
-    "ssh": { "host": "192.168.64.100", "port": 22, "user": "admin" },
-    "platform": "macos"
-}
+{"vnc": {"host": "localhost", "port": 5900, "password": "secret"},
+ "agent": {"host": "192.168.64.100", "port": 8648},
+ "platform": "macos"}
 ```
 
-## Using the Library
+Pass via `--connect spec.json` instead of individual flags.
 
-Add as a Swift Package dependency:
+## Workflow Patterns
 
-```swift
-.package(path: "../GUIVisionVMDriver")
-```
-
-Then `import GUIVisionVMDriver`:
-
-```swift
-// Connect to VNC
-let capture = VNCCapture(host: "localhost", port: 5901, password: "secret")
-try await capture.connect()
-
-// Query screen
-let size = await capture.screenSize() // CGSize?
-
-// Screenshot
-let image: CGImage = try await capture.captureImage()
-let cropped = try await capture.captureImage(region: CGRect(x: 0, y: 0, width: 800, height: 600))
-let pngData: Data = try await capture.screenshot()
-
-// Keyboard and mouse (requires withConnection for VNCConnection access)
-try await capture.withConnection { conn in
-    // High-level
-    VNCInput.typeText("Hello World!", connection: conn)
-    try VNCInput.pressKey("return", platform: .macos, connection: conn)
-    try VNCInput.pressKey("a", modifiers: ["cmd"], platform: .macos, connection: conn)
-    try VNCInput.click(x: 500, y: 400, connection: conn)
-    try VNCInput.click(x: 500, y: 400, button: "right", count: 1, connection: conn)
-    VNCInput.scroll(x: 500, y: 400, deltaX: 0, deltaY: -3, connection: conn)
-    try VNCInput.drag(fromX: 100, fromY: 100, toX: 400, toY: 400, connection: conn)
-
-    // Low-level
-    try VNCInput.keyDown("shift", platform: .macos, connection: conn)
-    try VNCInput.keyUp("shift", platform: .macos, connection: conn)
-    try VNCInput.mouseDown(x: 100, y: 200, button: "left", connection: conn)
-    VNCInput.mouseMove(x: 200, y: 300, connection: conn)
-    try VNCInput.mouseUp(x: 200, y: 300, button: "left", connection: conn)
-}
-
-// Cursor state (shape, position — depends on server support)
-let cursor = await capture.cursorState
-
-// OCR text recognition
-let image = try await capture.captureImage()
-let matches = TextRecognizer.recognizeText(in: image)
-// Each match: TextMatch(text: "Terminal", x: 248, y: 91, width: 55, height: 12, confidence: 0.95)
-
-// SSH
-let ssh = SSHClient(spec: SSHSpec(host: "192.168.64.100", user: "admin"))
-let result = try ssh.exec("echo hello")
-// result.stdout, result.stderr, result.exitCode, result.succeeded
-
-try ssh.upload(localPath: "/tmp/file.txt", remotePath: "/tmp/remote.txt")
-try ssh.download(remotePath: "/tmp/remote.txt", localPath: "/tmp/local.txt")
-
-// Video recording
-let recorder = StreamingCapture()
-try await recorder.start(outputPath: "out.mp4", config: StreamingCaptureConfig(width: 1920, height: 1080, fps: 30))
-for _ in 0..<100 {
-    let frame = try await capture.captureImage()
-    try await recorder.appendFrame(frame)
-}
-try await recorder.stop()
-
-// Disconnect
-await capture.disconnect()
-```
-
-## VM Management with tart
-
-This project does not manage VMs. Use [tart](https://tart.run) directly:
+### Discover-then-act (preferred)
 
 ```bash
-# List VMs
-tart list
+# 1. See what's on screen semantically
+guivision agent snapshot --agent "$GUIVISION_AGENT" --mode interact
 
-# Clone and start a VM
-tart clone guivision-golden-macos-tahoe my-test-vm
-tart run my-test-vm --no-graphics --vnc-experimental > /tmp/vnc.txt 2>&1 &
+# 2. Act on elements by role/label (not pixel coordinates)
+guivision agent press --agent "$GUIVISION_AGENT" --role button --label "Save"
 
-# Parse VNC URL from tart's stdout (format: vnc://:password@host:port)
-VNC_URL=$(grep -o 'vnc://[^ ]*' /tmp/vnc.txt | head -1 | sed 's/\.\.\.$//')
-VNC_HOST=$(echo "$VNC_URL" | sed -E 's|vnc://(:([^@]*)@)?([^:]+):([0-9]+)|\3|')
-VNC_PORT=$(echo "$VNC_URL" | sed -E 's|vnc://(:([^@]*)@)?([^:]+):([0-9]+)|\4|')
-VNC_PASS=$(echo "$VNC_URL" | sed -E 's|vnc://(:([^@]*)@)?.*|\2|')
-
-# Get VM IP for SSH
-VM_IP=$(tart ip my-test-vm)
-
-# Change display resolution (before or while running)
-tart set my-test-vm --display 1920x1080
-
-# Stop and delete
-tart stop my-test-vm
-tart delete my-test-vm
+# 3. Verify result
+guivision agent snapshot --agent "$GUIVISION_AGENT" --mode interact
 ```
 
-## Convenience Scripts
-
-These scripts automate common tart workflows for this project's integration tests:
+### Visual verification
 
 ```bash
-# Create golden VM image (one-time, ~10 min)
-scripts/vm-create-golden-macos.sh    # macOS (tart): SSH key auth, Xcode CLI tools, Homebrew, solid wallpaper
-scripts/vm-create-golden-linux.sh    # Linux (tart): SSH key auth, dev tools, solid wallpaper
-scripts/vm-create-golden-windows.sh --iso ~/Downloads/Win11_ARM64.iso  # Windows (QEMU): needs ISO from microsoft.com/en-us/software-download/windows11arm64
-
-# Run integration tests (starts VM, tests, stops VM)
-scripts/test-integration.sh
-scripts/test-integration.sh --viewer    # watch in VNC viewer
-
-# Interactive: keep VM running between test iterations
-source scripts/vm-start.sh --viewer
-swift test --filter IntegrationTests
-source scripts/vm-stop.sh
+# Screenshot + OCR for visual properties (colors, layout, rendered text)
+guivision screenshot --vnc "$GUIVISION_VNC" -o screen.png
+guivision find-text --vnc "$GUIVISION_VNC" "Expected text"
 ```
 
-### Environment variables set by the scripts
-
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `GUIVISION_VNC` | `127.0.0.1:59948` | VNC endpoint |
-| `GUIVISION_VNC_PASSWORD` | `syrup-rotate-nasty` | VNC password |
-| `GUIVISION_SSH` | `admin@192.168.64.100` | SSH endpoint |
-| `GUIVISION_PLATFORM` | `macos` | Platform hint |
-
-## Golden Image Contents
-
-The macOS golden image (`guivision-golden-macos-tahoe`) provides:
-
-- **macOS Tahoe** on Apple Silicon
-- **User:** `admin` with SSH key auth (host's public key in `authorized_keys`)
-- **Xcode Command Line Tools:** `swift`, `swiftc`, `clang`, `git`, `make`, `ld`
-- **Homebrew:** `/opt/homebrew/bin/brew` (in PATH via `.zprofile`)
-- **guivision-agent** at `/usr/local/bin/guivision-agent` — in-VM accessibility agent for GUI automation (window listing, element inspection, screenshots, actions)
-- **TCC accessibility grant** — agent has system-level accessibility permission (written to TCC database with code signing requirement during a SIP disable/enable cycle)
-- **SIP enabled** — standard security posture after image creation
-- **Desktop:** solid gray wallpaper, no widgets, no Terminal, session restore disabled
-
-You can compile and run Swift code, install packages with Homebrew, and use standard Unix tools inside the VM via SSH. The guivision-agent provides accessibility APIs for GUI testing when launched in a desktop session context.
-
-## Writing Test Scripts
-
-When writing a script that tests GUI behavior on a macOS VM:
-
-1. **Start a VM** using tart or the convenience scripts
-2. **Use `guivision screenshot`** to capture the screen and verify visual state
-3. **Use `guivision input`** to send keyboard/mouse events
-4. **Use `guivision ssh exec`** to run commands inside the VM and verify results
-5. **Use `guivision screen-size`** to know the display dimensions before clicking
-6. **Clean up** by stopping and deleting the VM
-
-### Example: verify typing reaches an application
+### Cross-VM communication
 
 ```bash
-# Start VM
-source scripts/vm-start.sh
-
-# Open Terminal inside the VM
-guivision ssh exec --ssh "$GUIVISION_SSH" "open -a Terminal"
-sleep 5
-
-# Click on Terminal window to focus it
-SIZE=$(guivision screen-size --vnc "$GUIVISION_VNC")
-CX=$((${SIZE%x*} / 2))
-CY=$((${SIZE#*x} / 2))
-guivision input click --vnc "$GUIVISION_VNC" $CX $CY
-sleep 1
-
-# Type a command
-guivision input type --vnc "$GUIVISION_VNC" "echo hello > /tmp/test.txt"
-guivision input key --vnc "$GUIVISION_VNC" return
-sleep 2
-
-# Verify via SSH
-RESULT=$(guivision ssh exec --ssh "$GUIVISION_SSH" "cat /tmp/test.txt")
-echo "Got: $RESULT"
-
-source scripts/vm-stop.sh
+# Start a server in VM1, connect from VM2
+guivision exec --agent "$VM1_AGENT" "python3 -m http.server 9000 &"
+VM1_IP=$(echo "$VM1_AGENT" | cut -d: -f1)
+guivision exec --agent "$VM2_AGENT" "curl -sf http://$VM1_IP:9000/"
 ```
 
-### Tips
+### Install and test software
 
-- After sending keyboard input, add `sleep` for the VM to process events
-- VNC cursor is a separate overlay — it doesn't appear in screenshots
-- Use `screen-size` to compute click coordinates relative to the display
-- Use `find-text` to locate UI elements by their text content instead of hardcoded coordinates
-- The `--platform` flag affects modifier key mapping — use `macos` for tart VMs
-- SSH key auth only; password auth is not supported by the SSH client
-- `AXIsProcessTrusted()` returns false when the agent is run via SSH (macOS "responsible client" audit session issue) — the TCC grant works correctly when the agent is launched by launchd in a desktop session
+```bash
+# macOS
+guivision exec --agent "$GUIVISION_AGENT" "brew install jq"
 
-## Connection Caching (Server Mode)
+# Linux
+guivision exec --agent "$GUIVISION_AGENT" "sudo apt-get install -y jq"
 
-The CLI transparently manages a background server process that holds persistent VNC and SSH connections. This eliminates per-command connection overhead when running multiple commands in sequence.
+# Windows
+guivision exec --agent "$GUIVISION_AGENT" "choco install jq -y"
+```
 
-### How it works
+## Golden Images
 
-1. The first `guivision` command auto-starts a background server process that connects to the VNC/SSH endpoints
-2. Subsequent commands reuse the existing server — no reconnection needed
-3. The server self-terminates after 300 seconds (5 minutes) of inactivity
-4. Different connection targets (different `--vnc`/`--ssh` values) get independent server instances
+Pre-built VM images with clean desktops, agent pre-installed, auto-login enabled.
 
-### What this means for scripts
+| Image | Hypervisor | User | Agent Autostart | Package Manager |
+|-------|-----------|------|-----------------|-----------------|
+| `guivision-golden-macos-tahoe` | tart | admin | LaunchAgent | Homebrew |
+| `guivision-golden-linux-24.04` | tart | admin | systemd user service | apt |
+| `guivision-golden-windows-11` | QEMU | admin | Task Scheduler | Chocolatey |
 
-- Rapid command sequences are much faster (only the first command pays the connection cost)
-- No user action is required — server lifecycle is fully automatic
-- The server communicates via a Unix domain socket at `/tmp/guivision-<hash>.sock`
-- If a server process crashes or is killed, the next command auto-starts a fresh one
+All images: solid gray wallpaper, no notifications/widgets, accessibility enabled, agent on port 8648.
 
-### Recording limits
+### Create golden images (one-time)
 
-When recording via the server, duration is required and capped at 300 seconds (5 minutes). Specifying `--duration 0` uses the 300-second cap. This prevents orphaned recording processes.
+```bash
+scripts/macos/vm-create-golden-macos.sh
+scripts/macos/vm-create-golden-linux.sh
+scripts/macos/vm-create-golden-windows.sh --iso ~/Downloads/Win11_ARM64.iso
+```
+
+## Tips
+
+- **Prefer accessibility over coordinates**: `--role button --label "Save"` is more robust than clicking at pixel (x, y)
+- **Use `find-text` for visual elements**: OCR finds rendered text that accessibility can't see (images, canvas, custom-drawn UI)
+- **Sleep after input**: VMs need time to process events — `sleep 1` after keyboard/mouse, `sleep 5` after launching apps
+- **Multi-VM networking**: tart VMs share a network bridge; QEMU uses NAT with port forwarding. tart VMs can reach each other by IP; QEMU VMs need explicit port forwards
+- **Platform modifiers**: `--platform macos` maps `cmd` to macOS Command key; `--platform windows` maps `cmd` to Ctrl
+- **Connection caching**: The first `guivision` command auto-starts a background VNC server process. Subsequent commands reuse it. Idle timeout: 5 minutes.
+- **Agent is the primary channel**: Use agent exec instead of SSH. VNC is for visual verification and keyboard/mouse when accessibility can't target an element.

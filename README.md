@@ -1,6 +1,6 @@
 # GUIVisionVMDriver
 
-A Swift library and CLI for interacting with machines via VNC and SSH. Designed for test automation, screenshot capture, video recording, and GUI-driven workflows.
+A Swift library and CLI for interacting with machines via VNC and in-VM accessibility agents. Designed for test automation, screenshot capture, video recording, and GUI-driven workflows.
 
 ## What It Does
 
@@ -13,15 +13,11 @@ A Swift library and CLI for interacting with machines via VNC and SSH. Designed 
 - Type text with automatic handling of uppercase and shifted symbols
 - Track cursor shape and position
 
-**OCR text recognition:**
-- Find text on the VNC screen using Apple Vision framework
-- Returns JSON with text, bounding box coordinates, and confidence
-- Optional polling mode to wait for text to appear (with timeout)
-
-**SSH command execution and file transfer:**
-- Execute commands over SSH with stdout/stderr/exit code capture
-- Upload and download files via SCP
-- Persistent multiplexed connections via OpenSSH ControlMaster
+**In-VM agent communication** (HTTP on port 8648):
+- Accessibility tree access — query window lists, element snapshots, element inspection
+- Semantic UI actions — press buttons, activate controls by role and label
+- Command execution with stdout/stderr/exit code capture
+- File upload and download
 
 **Streaming video capture:**
 - Record VNC framebuffer to MP4 using AVAssetWriter
@@ -64,21 +60,28 @@ guivision input move --vnc localhost:5901 100 200
 guivision input scroll --vnc localhost:5901 500 400 --dy -3
 guivision input drag --vnc localhost:5901 100 100 400 400
 
-# OCR — find text on screen
+# OCR — find text on screen (captures VNC screenshot + runs Vision OCR locally)
 guivision find-text --vnc localhost:5901 "Terminal"             # find text, return JSON with coords
 guivision find-text --vnc localhost:5901 "Loading" --timeout 30 # poll until text appears (30s max)
 guivision find-text --vnc localhost:5901                        # return all recognized text
 
-# SSH
-guivision ssh exec --ssh admin@192.168.64.100 "uname -a"
-guivision ssh upload --ssh admin@192.168.64.100 local.txt /tmp/remote.txt
-guivision ssh download --ssh admin@192.168.64.100 /tmp/remote.txt local.txt
+# Agent — exec and file transfer
+guivision exec --agent localhost:8648 "uname -a"
+guivision upload --agent localhost:8648 local.txt /tmp/remote.txt
+guivision download --agent localhost:8648 /tmp/remote.txt local.txt
+
+# Agent — accessibility
+guivision agent health --agent localhost:8648
+guivision agent windows --agent localhost:8648
+guivision agent snapshot --agent localhost:8648 --mode interact --window "Settings"
+guivision agent inspect --agent localhost:8648 --role button --label "Save"
+guivision agent press --agent localhost:8648 --role button --label "Save"
 
 # Video recording
 guivision record --vnc localhost:5901 -o recording.mp4 --fps 30 --duration 10
 ```
 
-All commands accept `--connect spec.json` for connection details from a JSON file, or individual `--vnc`, `--ssh`, and `--platform` flags.
+All commands accept `--connect spec.json` for connection details from a JSON file, or individual `--vnc`, `--agent`, and `--platform` flags.
 
 ### Key names
 
@@ -125,10 +128,11 @@ try await capture.withConnection { conn in
     try VNCInput.mouseUp(x: 300, y: 400, button: "left", connection: conn)
 }
 
-// SSH
-let ssh = SSHClient(spec: SSHSpec(host: "192.168.64.100", user: "admin"))
-let result = try ssh.exec("echo hello")
-print(result.stdout) // "hello"
+// Agent communication
+let agent = AgentTCPClient(host: "192.168.64.100", port: 8648)
+let health = try await agent.health()
+let snapshot = try await agent.snapshot(mode: "interact", window: "Settings")
+let execResult = try await agent.exec(command: "uname -a")
 
 // Video recording
 let recorder = StreamingCapture()
@@ -139,15 +143,15 @@ try await recorder.stop()
 
 ## Integration Testing
 
-Tests run against a real macOS VM via [tart](https://tart.run). A golden VM image provides a clean environment with SSH, Xcode CLI tools, and Homebrew pre-installed.
+Tests run against a real macOS VM via [tart](https://tart.run). A golden VM image provides a clean environment with the in-VM agent, Xcode CLI tools, and Homebrew pre-installed.
 
 ### First-time setup
 
 Create the golden image (one-time, ~10 minutes):
 
 ```bash
-scripts/vm-create-golden-macos.sh    # macOS (tart)
-scripts/vm-create-golden-linux.sh    # Linux (tart)
+scripts/macos/vm-create-golden-macos.sh    # macOS (tart)
+scripts/macos/vm-create-golden-linux.sh    # Linux (tart)
 ```
 
 For Windows, first download the Windows 11 ARM64 ISO from
@@ -155,7 +159,7 @@ For Windows, first download the Windows 11 ARM64 ISO from
 then pass it to the script:
 
 ```bash
-scripts/vm-create-golden-windows.sh --iso ~/Downloads/Win11_ARM64.iso
+scripts/macos/vm-create-golden-windows.sh --iso ~/Downloads/Win11_ARM64.iso
 ```
 
 The ISO is cached after first use — subsequent runs don't need `--iso`.
@@ -165,54 +169,49 @@ The Windows installation is fully automated via `autounattend.xml`
 ### Running tests
 
 ```bash
-# One command — starts VM, runs tests, stops VM
-scripts/test-integration.sh
-
-# Watch tests run in a VNC viewer
-scripts/test-integration.sh --viewer
-
-# Keep VM running after tests (for debugging)
-scripts/test-integration.sh --keep
-```
-
-### Interactive use
-
-```bash
-source scripts/vm-start.sh --viewer                     # macOS (default)
-source scripts/vm-start.sh --platform linux --viewer     # Linux
-source scripts/vm-start.sh --platform windows --viewer   # Windows
-swift test --filter IntegrationTests
-# ... edit code, re-run tests ...
-source scripts/vm-stop.sh
+# Start a VM, run tests, stop when done
+source scripts/macos/vm-start.sh --viewer                     # macOS (default)
+source scripts/macos/vm-start.sh --platform linux --viewer     # Linux
+source scripts/macos/vm-start.sh --platform windows --viewer   # Windows
+swift test --package-path cli/macos --filter IntegrationTests
+source scripts/macos/vm-stop.sh
 ```
 
 ### Unit tests only (no VM needed)
 
 ```bash
-swift test
+swift test --package-path cli/macos
 ```
 
 ## Scripts
 
 | Script | How to run | What it does |
 |--------|-----------|--------------|
-| `scripts/vm-create-golden-macos.sh` | `./scripts/vm-create-golden-macos.sh` | Create macOS golden VM image (tart) with SSH + Xcode + Homebrew |
-| `scripts/vm-create-golden-linux.sh` | `./scripts/vm-create-golden-linux.sh` | Create Linux golden VM image (tart) with SSH + dev tools |
-| `scripts/vm-create-golden-windows.sh` | `./scripts/vm-create-golden-windows.sh --iso <path>` | Create Windows golden VM image (QEMU) with SSH; requires downloaded ISO on first run |
-| `scripts/test-integration.sh` | `./scripts/test-integration.sh` | Start VM, run integration tests, stop VM |
-| `scripts/vm-start.sh` | `source scripts/vm-start.sh` | Start VM, set env vars in current shell |
-| `scripts/vm-stop.sh` | `source scripts/vm-stop.sh` | Stop VM, clean env vars |
+| `scripts/macos/vm-create-golden-macos.sh` | `./scripts/macos/vm-create-golden-macos.sh` | Create macOS golden VM image (tart) with agent + Xcode + Homebrew |
+| `scripts/macos/vm-create-golden-linux.sh` | `./scripts/macos/vm-create-golden-linux.sh` | Create Linux golden VM image (tart) with agent + dev tools |
+| `scripts/macos/vm-create-golden-windows.sh` | `./scripts/macos/vm-create-golden-windows.sh --iso <path>` | Create Windows golden VM image (QEMU) with agent; requires downloaded ISO on first run |
+| `scripts/macos/vm-start.sh` | `source scripts/macos/vm-start.sh` | Start VM, set env vars in current shell |
+| `scripts/macos/vm-stop.sh` | `source scripts/macos/vm-stop.sh` | Stop VM, clean env vars |
+
+### Environment variables
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `GUIVISION_AGENT` | `192.168.64.100:8648` | Agent HTTP endpoint |
+| `GUIVISION_VNC` | `127.0.0.1:59948` | VNC endpoint |
+| `GUIVISION_VNC_PASSWORD` | `syrup-rotate-nasty` | VNC password (tart only) |
+| `GUIVISION_PLATFORM` | `macos` | Target platform (`macos`, `linux`, `windows`) |
 
 ## Golden Image Contents
 
 ### macOS (`guivision-golden-macos-tahoe`)
 
 - **macOS Tahoe** (Apple Silicon, via Cirrus Labs vanilla image)
-- **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin`
+- **guivision-agent** — runs as LaunchAgent on port 8648, at `/usr/local/bin/guivision-agent`
+- **TCC accessibility grant** — agent has accessibility permission via system TCC database (with code signing requirement); requires SIP disable/enable cycle during image creation
+- **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin` (used during golden image creation)
 - **Xcode Command Line Tools** — `swift`, `clang`, `git`, `make`
 - **Homebrew** — `/opt/homebrew/bin/brew`
-- **guivision-agent** — in-VM accessibility agent at `/usr/local/bin/guivision-agent`
-- **TCC accessibility grant** — agent has accessibility permission via system TCC database (with code signing requirement)
 - **Solid gray wallpaper** — clean background for screenshot analysis
 - **No desktop widgets** — no visual clutter
 - **Session restore disabled** — apps don't reopen old windows
@@ -221,7 +220,10 @@ swift test
 ### Linux (`guivision-golden-linux-24.04`)
 
 - **Ubuntu 24.04 Desktop** (ARM64, via Cirrus Labs vanilla image + `ubuntu-desktop-minimal`)
-- **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin`
+- **guivision-agent** — runs as systemd user service on port 8648
+- **AT-SPI2 accessibility enabled** — `python3-pyatspi` for accessibility bindings
+- **xdotool** — window management fallback
+- **SSH key auth** — host's SSH public key in `authorized_keys`, user `admin` (used during golden image creation)
 - **GDM autologin** — boots directly to desktop as `admin`
 - **Silent boot** — GRUB hidden, Plymouth splash, no text-mode console output
 - **Solid gray wallpaper** — clean background for screenshot analysis
@@ -232,7 +234,9 @@ swift test
 ### Windows (`guivision-golden-windows-11`)
 
 - **Windows 11 Pro** (ARM64, installed from Microsoft evaluation ISO via QEMU)
-- **SSH key auth** — OpenSSH Server with key in `administrators_authorized_keys`, user `admin`/`admin`
+- **guivision-agent** — runs as Task Scheduler logon task on port 8648
+- **Chocolatey** — package manager for Windows dependencies
+- **No SSH** — agent binary installed from autounattend media; all communication via agent HTTP
 - **Autologin** — boots directly to desktop as `admin`
 - **Solid gray wallpaper** — applied via Win32 API in desktop session
 - **Widgets, search box, notifications disabled** — clean taskbar for vision pipeline
@@ -246,7 +250,9 @@ swift test
 - Swift 6.0
 - [tart](https://tart.run) — for macOS and Linux VMs
 - [QEMU](https://www.qemu.org/) + [swtpm](https://github.com/stefanberger/swtpm) — for Windows VMs (`brew install qemu swtpm`)
-- SSH public key at `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` (for golden image creation)
+- SSH public key at `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` (for macOS/Linux golden image creation — Windows does not use SSH)
+- .NET 9+ SDK (for building Windows agent)
+- Python 3.12+ (ships with Ubuntu desktop — for Linux agent)
 
 ## LLM Integration
 
