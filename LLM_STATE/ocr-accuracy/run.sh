@@ -16,9 +16,13 @@ while true; do
 Read LLM_STATE/ocr-accuracy/plan.md for the hypothesis backlog and current baseline.
 Read LLM_STATE/ocr-accuracy/memory.md for distilled learnings.
 
-Pick one hypothesis, implement it, evaluate against baseline, record results in
-plan.md, append a session log entry to LLM_STATE/ocr-accuracy/session-log.md,
-then stop.
+Display a summary of the current backlog (title, status, and priority for each
+hypothesis). Then ask the user if they have any input on which hypothesis to
+work on next. Wait for the user's response. If they have a preference, work on
+that one; otherwise pick the best next hypothesis.
+
+Implement it, evaluate against baseline, record results in plan.md, append a
+session log entry to LLM_STATE/ocr-accuracy/session-log.md, then stop.
 
 Research cycle:
 1. REVIEW previous findings and current baseline metrics
